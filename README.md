@@ -8,7 +8,7 @@ Automated [restic](https://restic.net) backups for Docker Compose environments. 
 # docker-compose.yml
 services:
   rdb:
-    image: ghcr.io/shanescott/rdb:latest
+    image: ghcr.io/scootec/rdb:latest
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /var/lib/docker/volumes:/var/lib/docker/volumes:ro

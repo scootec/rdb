@@ -1,4 +1,4 @@
-module github.com/shanescott/rdb
+module github.com/scootec/rdb
 
 go 1.24.0
 

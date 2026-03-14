@@ -7,8 +7,8 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/rs/zerolog/log"
-	"github.com/shanescott/rdb/internal/docker"
-	"github.com/shanescott/rdb/internal/restic"
+	"github.com/scootec/rdb/internal/docker"
+	"github.com/scootec/rdb/internal/restic"
 )
 
 // backupVolumes backs up the volumes mounted to the given container.

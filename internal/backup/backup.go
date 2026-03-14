@@ -5,9 +5,9 @@ import (
 	"fmt"
 
 	"github.com/rs/zerolog/log"
-	"github.com/shanescott/rdb/internal/config"
-	"github.com/shanescott/rdb/internal/docker"
-	"github.com/shanescott/rdb/internal/restic"
+	"github.com/scootec/rdb/internal/config"
+	"github.com/scootec/rdb/internal/docker"
+	"github.com/scootec/rdb/internal/restic"
 )
 
 // Orchestrator discovers containers and runs backups.

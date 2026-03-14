@@ -7,11 +7,11 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"github.com/shanescott/rdb/internal/backup"
-	"github.com/shanescott/rdb/internal/config"
-	"github.com/shanescott/rdb/internal/docker"
-	"github.com/shanescott/rdb/internal/restic"
-	"github.com/shanescott/rdb/internal/scheduler"
+	"github.com/scootec/rdb/internal/backup"
+	"github.com/scootec/rdb/internal/config"
+	"github.com/scootec/rdb/internal/docker"
+	"github.com/scootec/rdb/internal/restic"
+	"github.com/scootec/rdb/internal/scheduler"
 )
 
 func main() {
