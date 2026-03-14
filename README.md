@@ -105,6 +105,34 @@ rdb maintenance  Run forget + prune + check
 
 Any restic backend works: local path, SFTP, S3, Backblaze B2, Azure, Google Cloud Storage, rclone, and more. See the [restic documentation](https://restic.readthedocs.io/en/latest/030_preparing_a_new_repo.html) for backend-specific setup.
 
+## Releasing
+
+Releases are fully automated via [semantic-release](https://semantic-release.gitbook.io). Push commits to `main` using [Conventional Commits](https://www.conventionalcommits.org) and the pipeline handles everything else.
+
+| Commit type | Version bump |
+|-------------|--------------|
+| `feat:` | minor — e.g. `1.2.0 → 1.3.0` |
+| `fix:`, `perf:` | patch — e.g. `1.2.0 → 1.2.1` |
+| `feat!:` or `BREAKING CHANGE:` footer | major — e.g. `1.2.0 → 2.0.0` |
+| `docs:`, `chore:`, `refactor:`, `ci:`, `test:` | no release |
+
+When a release is warranted, the pipeline automatically:
+
+1. Determines the next version from commit history
+2. Creates and pushes a `vX.Y.Z` git tag
+3. Publishes a GitHub Release with auto-generated notes
+4. Builds multi-platform Docker images (`linux/amd64`, `linux/arm64`) and pushes them to GHCR
+
+The following GHCR image tags are produced on each release:
+
+| Tag | Example |
+|-----|---------|
+| Full version | `ghcr.io/scootec/rdb:1.2.3` |
+| Major.minor | `ghcr.io/scootec/rdb:1.2` |
+| `latest` | `ghcr.io/scootec/rdb:latest` |
+
+No manual tagging is needed. See [CLAUDE.md](CLAUDE.md) for commit message guidelines.
+
 ## Building from source
 
 ```sh
