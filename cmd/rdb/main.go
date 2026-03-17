@@ -156,6 +156,9 @@ func runMaintenance(cfg *config.Config) {
 		Weekly:  cfg.KeepWeekly,
 		Monthly: cfg.KeepMonthly,
 		Yearly:  cfg.KeepYearly,
+		Last:    cfg.KeepLast,
+		Hourly:  cfg.KeepHourly,
+		Within:  cfg.KeepWithin,
 	}
 
 	if err := rc.Forget(policy); err != nil {

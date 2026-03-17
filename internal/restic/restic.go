@@ -16,6 +16,9 @@ type RetentionPolicy struct {
 	Weekly  int
 	Monthly int
 	Yearly  int
+	Last    int
+	Hourly  int
+	Within  string
 }
 
 // Runner executes restic commands.
@@ -63,13 +66,23 @@ func (r *Runner) Snapshots() error {
 
 // Forget removes old snapshots according to the retention policy.
 func (r *Runner) Forget(policy RetentionPolicy) error {
-	return r.run(nil,
+	args := []string{
 		"forget",
 		"--keep-daily", strconv.Itoa(policy.Daily),
 		"--keep-weekly", strconv.Itoa(policy.Weekly),
 		"--keep-monthly", strconv.Itoa(policy.Monthly),
 		"--keep-yearly", strconv.Itoa(policy.Yearly),
-	)
+	}
+	if policy.Last > 0 {
+		args = append(args, "--keep-last", strconv.Itoa(policy.Last))
+	}
+	if policy.Hourly > 0 {
+		args = append(args, "--keep-hourly", strconv.Itoa(policy.Hourly))
+	}
+	if policy.Within != "" {
+		args = append(args, "--keep-within", policy.Within)
+	}
+	return r.run(nil, args...)
 }
 
 // Prune removes unreferenced data from the repository.

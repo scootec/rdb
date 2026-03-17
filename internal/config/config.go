@@ -28,6 +28,9 @@ type Config struct {
 	KeepWeekly  int
 	KeepMonthly int
 	KeepYearly  int
+	KeepLast    int
+	KeepHourly  int
+	KeepWithin  string
 }
 
 // Load reads configuration from environment variables and returns a validated Config.
@@ -44,6 +47,9 @@ func Load() (*Config, error) {
 		KeepWeekly:         envInt("RESTIC_KEEP_WEEKLY", 4),
 		KeepMonthly:        envInt("RESTIC_KEEP_MONTHLY", 12),
 		KeepYearly:         envInt("RESTIC_KEEP_YEARLY", 3),
+		KeepLast:           envInt("RESTIC_KEEP_LAST", 0),
+		KeepHourly:         envInt("RESTIC_KEEP_HOURLY", 0),
+		KeepWithin:         envOrDefault("RESTIC_KEEP_WITHIN", ""),
 	}
 
 	if cfg.ResticRepository == "" {

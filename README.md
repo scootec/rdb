@@ -65,6 +65,9 @@ rdb initialises the repository on first run and then backs up on the configured 
 | `RESTIC_KEEP_WEEKLY` | `4` | Weekly snapshots to keep |
 | `RESTIC_KEEP_MONTHLY` | `12` | Monthly snapshots to keep |
 | `RESTIC_KEEP_YEARLY` | `3` | Yearly snapshots to keep |
+| `RESTIC_KEEP_LAST` | `0` (off) | Keep the last N snapshots regardless of date |
+| `RESTIC_KEEP_HOURLY` | `0` (off) | Hourly snapshots to keep |
+| `RESTIC_KEEP_WITHIN` | `` (off) | Keep all snapshots within a duration (e.g. `2w3d`, `1y`) |
 
 All backend credentials recognised by restic (`AWS_*`, `B2_*`, `AZURE_*`, `GOOGLE_*`, etc.) are passed through automatically.
 
