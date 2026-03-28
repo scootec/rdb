@@ -101,7 +101,68 @@ rdb run          Start the cron scheduler (default container entrypoint)
 rdb backup       Run a backup immediately
 rdb status       Show discovered containers and their backup config
 rdb snapshots    List restic snapshots
+rdb restore      Restore a snapshot (see below)
 rdb maintenance  Run forget + prune + check
+```
+
+## Restoring from backup
+
+### Requirements
+
+For restore to work, the rdb container needs **write access** to the paths it will restore to. If you only need backups, read-only mounts are sufficient — but for restore you must mount the data directories read-write:
+
+```yaml
+services:
+  rdb:
+    image: ghcr.io/scootec/rdb:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/volumes:/var/lib/docker/volumes      # read-write for restore
+      - /home/user/containers:/home/user/containers           # read-write for restore
+```
+
+Volume restore writes files back to their original absolute paths inside the rdb container. If the host path isn't mounted (or is mounted read-only), the restore will fail.
+
+### Listing snapshots
+
+Use `rdb snapshots` to list all snapshots with their IDs, types, and metadata:
+
+```
+ID        Time              Type       Project    Service    Path
+abc123    2026-03-28 02:00  postgres   myapp      db         /databases/myapp/db/postgres/all_databases.sql
+def456    2026-03-28 02:00  volume     myapp      app        /var/lib/docker/volumes/myapp_app-data/_data
+```
+
+### Recommended restore order
+
+1. Start only the database containers and rdb:
+   ```sh
+   docker compose up -d rdb postgres
+   ```
+
+2. Restore the database (the DB container must be running to accept the import):
+   ```sh
+   docker exec rdb rdb restore <db-snapshot-id>
+   ```
+
+3. Restore volumes (with app containers stopped so nothing writes to the data directories):
+   ```sh
+   docker exec rdb rdb restore <volume-snapshot-id>
+   ```
+
+4. Start the rest of the stack:
+   ```sh
+   docker compose up -d
+   ```
+
+rdb automatically detects the snapshot type (volume, PostgreSQL, MySQL, MariaDB) from tags and locates the target container by its Compose project and service labels.
+
+### Dump to file
+
+Extract a database SQL dump to a file instead of importing it:
+
+```sh
+docker exec rdb rdb restore <snapshot-id> --output /tmp/dump.sql
 ```
 
 ## Supported repositories

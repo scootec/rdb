@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"os"
 
+	"strings"
+	"text/tabwriter"
+	"time"
+
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/scootec/rdb/internal/backup"
 	"github.com/scootec/rdb/internal/config"
 	"github.com/scootec/rdb/internal/docker"
 	"github.com/scootec/rdb/internal/restic"
+	"github.com/scootec/rdb/internal/restore"
 	"github.com/scootec/rdb/internal/scheduler"
 )
 
@@ -45,6 +50,8 @@ func main() {
 		runStatus(cfg)
 	case "snapshots":
 		runSnapshots(cfg)
+	case "restore":
+		runRestore(cfg)
 	case "maintenance":
 		runMaintenance(cfg)
 	default:
@@ -62,6 +69,7 @@ Commands:
   backup       Run a backup immediately
   status       Show discovered containers and their backup configuration
   snapshots    List restic snapshots
+  restore      Restore a snapshot (use 'rdb snapshots' to find IDs)
   maintenance  Run forget + prune + check`)
 }
 
@@ -143,8 +151,86 @@ func runStatus(cfg *config.Config) {
 
 func runSnapshots(cfg *config.Config) {
 	rc := restic.New()
-	if err := rc.Snapshots(); err != nil {
-		log.Fatal().Err(err).Send()
+	snaps, err := rc.SnapshotsAll()
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to list snapshots")
+	}
+
+	if len(snaps) == 0 {
+		fmt.Println("No snapshots found.")
+		return
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tTime\tType\tProject\tService\tPath")
+	fmt.Fprintln(w, "--\t----\t----\t-------\t-------\t----")
+	for _, snap := range snaps {
+		snapType := snapshotType(snap)
+		project := tagValue(snap, "project")
+		service := tagValue(snap, "service")
+		path := ""
+		if len(snap.Paths) > 0 {
+			path = snap.Paths[0]
+		}
+		t, err := time.Parse(time.RFC3339Nano, snap.Time)
+		timeStr := snap.Time
+		if err == nil {
+			timeStr = t.Local().Format("2006-01-02 15:04")
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", snap.ShortID, timeStr, snapType, project, service, path)
+	}
+	w.Flush()
+}
+
+func snapshotType(snap restic.Snapshot) string {
+	for _, tag := range snap.Tags {
+		switch tag {
+		case "volume", "postgres", "mysql", "mariadb":
+			return tag
+		}
+	}
+	return "unknown"
+}
+
+func tagValue(snap restic.Snapshot, prefix string) string {
+	for _, t := range snap.Tags {
+		if strings.HasPrefix(t, prefix+":") {
+			return strings.TrimPrefix(t, prefix+":")
+		}
+	}
+	return ""
+}
+
+func runRestore(cfg *config.Config) {
+	if len(os.Args) < 3 {
+		fmt.Fprintln(os.Stderr, "Usage: rdb restore <snapshot-id> [--output <path>]")
+		os.Exit(1)
+	}
+
+	snapshotID := os.Args[2]
+	var outputPath string
+	for i := 3; i < len(os.Args); i++ {
+		if os.Args[i] == "--output" && i+1 < len(os.Args) {
+			outputPath = os.Args[i+1]
+			i++
+		}
+	}
+
+	dc, err := docker.New()
+	if err != nil {
+		log.Fatal().Err(err).Msg("connecting to Docker")
+	}
+	defer dc.Close()
+
+	rc := restic.New()
+	restorer := restore.New(dc, rc)
+
+	ctx := context.Background()
+	if err := restorer.Restore(ctx, restore.Options{
+		SnapshotID: snapshotID,
+		OutputPath: outputPath,
+	}); err != nil {
+		log.Fatal().Err(err).Msg("restore failed")
 	}
 }
 

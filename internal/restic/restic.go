@@ -1,6 +1,8 @@
 package restic
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +11,16 @@ import (
 
 	"github.com/rs/zerolog/log"
 )
+
+// Snapshot represents a restic snapshot returned by "restic snapshots --json".
+type Snapshot struct {
+	ShortID  string   `json:"short_id"`
+	ID       string   `json:"id"`
+	Time     string   `json:"time"`
+	Paths    []string `json:"paths"`
+	Tags     []string `json:"tags"`
+	Hostname string   `json:"hostname"`
+}
 
 // RetentionPolicy specifies how many snapshots to keep.
 type RetentionPolicy struct {
@@ -95,6 +107,70 @@ func (r *Runner) Check() error {
 	return r.run(nil, "check")
 }
 
+// SnapshotsByID returns snapshot metadata for a specific snapshot ID.
+func (r *Runner) SnapshotsByID(id string) ([]Snapshot, error) {
+	out, err := r.runCapture("snapshots", id, "--json")
+	if err != nil {
+		return nil, err
+	}
+	var snaps []Snapshot
+	if err := json.Unmarshal(out, &snaps); err != nil {
+		return nil, fmt.Errorf("parsing snapshot JSON: %w", err)
+	}
+	return snaps, nil
+}
+
+// SnapshotsAll returns all rdb-managed snapshots.
+func (r *Runner) SnapshotsAll() ([]Snapshot, error) {
+	out, err := r.runCapture("snapshots", "--tag", "rdb", "--json")
+	if err != nil {
+		return nil, err
+	}
+	var snaps []Snapshot
+	if err := json.Unmarshal(out, &snaps); err != nil {
+		return nil, fmt.Errorf("parsing snapshot JSON: %w", err)
+	}
+	return snaps, nil
+}
+
+// Restore runs "restic restore <snapshotID> --target <target>".
+func (r *Runner) Restore(snapshotID, target string) error {
+	return r.run(nil, "restore", snapshotID, "--target", target)
+}
+
+// Dump runs "restic dump <snapshotID> <path>" and returns stdout as a reader.
+// The caller must close the returned reader.
+func (r *Runner) Dump(snapshotID, path string) (io.ReadCloser, error) {
+	args := []string{"dump", snapshotID, path}
+	log.Debug().Strs("args", args).Msg("running restic")
+
+	cmd := exec.Command("restic", args...)
+	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("restic dump stdout pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("restic dump start: %w", err)
+	}
+
+	return &cmdReader{cmd: cmd, ReadCloser: stdout}, nil
+}
+
+// cmdReader wraps a command's stdout pipe and waits for the command on Close.
+type cmdReader struct {
+	cmd *exec.Cmd
+	io.ReadCloser
+}
+
+func (r *cmdReader) Close() error {
+	r.ReadCloser.Close()
+	return r.cmd.Wait()
+}
+
 // run executes the restic binary with the given arguments.
 // If stdin is non-nil it is connected to the command's stdin.
 func (r *Runner) run(stdin io.Reader, args ...string) error {
@@ -113,4 +189,20 @@ func (r *Runner) run(stdin io.Reader, args ...string) error {
 		return fmt.Errorf("restic %v: %w", args, err)
 	}
 	return nil
+}
+
+// runCapture executes restic and returns captured stdout bytes.
+func (r *Runner) runCapture(args ...string) ([]byte, error) {
+	log.Debug().Strs("args", args).Msg("running restic")
+
+	cmd := exec.Command("restic", args...)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("restic %v: %w", args, err)
+	}
+	return buf.Bytes(), nil
 }

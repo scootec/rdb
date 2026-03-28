@@ -168,6 +168,31 @@ func (c *Client) StartContainer(ctx context.Context, containerID string) error {
 	return c.cli.ContainerStart(ctx, containerID, container.StartOptions{})
 }
 
+// FindContainer locates a running container by its Compose project and service labels.
+// Returns an error if zero or multiple containers match.
+func (c *Client) FindContainer(ctx context.Context, project, service string) (*ContainerInfo, error) {
+	containers, err := c.DiscoverContainers(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var matches []ContainerInfo
+	for _, ctr := range containers {
+		if ctr.Project == project && (ctr.Service == service || ctr.Name == service) {
+			matches = append(matches, ctr)
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("no running container found for project=%q service=%q", project, service)
+	case 1:
+		return &matches[0], nil
+	default:
+		return nil, fmt.Errorf("multiple containers match project=%q service=%q — cannot determine restore target", project, service)
+	}
+}
+
 // --- helpers ---
 
 func parseEnvSlice(envSlice []string) map[string]string {
