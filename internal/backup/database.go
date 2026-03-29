@@ -50,10 +50,19 @@ func dumpDatabase(ctx context.Context, dc *docker.Client, rc *restic.Runner, ctr
 
 	case "mariadb":
 		password = ctr.Env["MARIADB_ROOT_PASSWORD"]
+		if password == "" {
+			password = ctr.Env["MYSQL_ROOT_PASSWORD"]
+		}
 		user = "root"
 		if password == "" {
 			user = ctr.Env["MARIADB_USER"]
+			if user == "" {
+				user = ctr.Env["MYSQL_USER"]
+			}
 			password = ctr.Env["MARIADB_PASSWORD"]
+			if password == "" {
+				password = ctr.Env["MYSQL_PASSWORD"]
+			}
 		}
 		cmd = []string{
 			"mariadb-dump",
