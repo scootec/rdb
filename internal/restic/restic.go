@@ -45,11 +45,11 @@ func New() *Runner {
 // InitRepo initialises the restic repository if it does not exist yet.
 // It first checks with "restic cat config"; only runs "restic init" if needed.
 func (r *Runner) InitRepo() error {
-	if err := r.run(nil, "cat", "config"); err == nil {
+	if err := r.runQuiet("cat", "config"); err == nil {
 		log.Debug().Msg("restic repository already initialised")
 		return nil
 	}
-	log.Info().Msg("initialising restic repository")
+	log.Info().Msg("no existing restic repository found, creating a new one")
 	return r.run(nil, "init")
 }
 
@@ -169,6 +169,20 @@ type cmdReader struct {
 func (r *cmdReader) Close() error {
 	r.ReadCloser.Close()
 	return r.cmd.Wait()
+}
+
+// runQuiet executes restic suppressing stdout and stderr.
+// Used for probes where restic's output would confuse the user.
+func (r *Runner) runQuiet(args ...string) error {
+	log.Debug().Strs("args", args).Msg("running restic")
+
+	cmd := exec.Command("restic", args...)
+	cmd.Env = os.Environ()
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("restic %v: %w", args, err)
+	}
+	return nil
 }
 
 // run executes the restic binary with the given arguments.
