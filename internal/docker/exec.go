@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -22,6 +23,7 @@ type execReader struct {
 	pr *io.PipeReader
 	pw *io.PipeWriter
 
+	stderr  bytes.Buffer
 	started bool
 	done    chan struct{}
 	err     error
@@ -32,7 +34,7 @@ func (r *execReader) start() {
 	r.done = make(chan struct{})
 	go func() {
 		defer close(r.done)
-		_, err := stdcopy.StdCopy(r.pw, io.Discard, r.conn.Reader)
+		_, err := stdcopy.StdCopy(r.pw, &r.stderr, r.conn.Reader)
 		r.pw.CloseWithError(err)
 	}()
 	r.started = true
@@ -43,6 +45,11 @@ func (r *execReader) Read(p []byte) (int, error) {
 		r.start()
 	}
 	return r.pr.Read(p)
+}
+
+// Stderr returns the captured stderr output. Only valid after Close.
+func (r *execReader) Stderr() string {
+	return r.stderr.String()
 }
 
 func (r *execReader) Close() error {

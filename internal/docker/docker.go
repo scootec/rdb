@@ -129,14 +129,26 @@ func (c *Client) parseContainer(ctx context.Context, id string, labels map[strin
 	return info, nil
 }
 
-// ExecDump runs a command inside the target container and returns an io.ReadCloser of its stdout.
-// The caller is responsible for closing the returned reader.
-func (c *Client) ExecDump(ctx context.Context, containerID string, cmd []string, extraEnv []string) (interface{ Read([]byte) (int, error); Close() error }, int, error) {
+// ExecDumpReader is returned by ExecDump and provides access to stdout and
+// stderr of the executed command.
+type ExecDumpReader struct {
+	*execReader
+}
+
+// ExecID returns the Docker exec ID for inspecting exit codes.
+func (r *ExecDumpReader) ExecID() string {
+	return r.execReader.execID
+}
+
+// ExecDump runs a command inside the target container and returns a reader for
+// its stdout. Stderr is captured and available via the Stderr method after the
+// reader is closed. The caller is responsible for closing the returned reader.
+func (c *Client) ExecDump(ctx context.Context, containerID string, cmd []string, extraEnv []string) (*ExecDumpReader, int, error) {
 	execConfig := container.ExecOptions{
 		Cmd:          cmd,
 		Env:          extraEnv,
 		AttachStdout: true,
-		AttachStderr: false,
+		AttachStderr: true,
 	}
 
 	execID, err := c.cli.ContainerExecCreate(ctx, containerID, execConfig)
@@ -149,12 +161,11 @@ func (c *Client) ExecDump(ctx context.Context, containerID string, cmd []string,
 		return nil, -1, fmt.Errorf("exec attach: %w", err)
 	}
 
-	// We return the raw multiplexed reader; callers use docker.StdCopy to demux.
-	return &execReader{
+	return &ExecDumpReader{&execReader{
 		cli:    c.cli,
 		execID: execID.ID,
 		conn:   resp,
-	}, 0, nil
+	}}, 0, nil
 }
 
 // StopContainer stops the given container.

@@ -105,11 +105,23 @@ func dumpDatabase(ctx context.Context, dc *docker.Client, rc *restic.Runner, ctr
 	}()
 
 	if err := rc.BackupFromStdin(stdinFilename, pr, tags); err != nil {
+		if stderr := reader.Stderr(); stderr != "" {
+			log.Error().Str("container", ctr.Name).Str("db", dbType).Str("stderr", stderr).Msg("database dump stderr")
+		}
 		return fmt.Errorf("restic backup stdin (%s/%s): %w", ctr.Name, dbType, err)
 	}
 
 	if copyErr := <-errCh; copyErr != nil {
 		return fmt.Errorf("reading dump output (%s/%s): %w", ctr.Name, dbType, copyErr)
+	}
+
+	// Check if the dump command itself failed
+	exitCode, inspectErr := dc.ExecExitCode(ctx, reader.ExecID())
+	if inspectErr != nil {
+		log.Warn().Err(inspectErr).Str("container", ctr.Name).Str("db", dbType).Msg("could not inspect exec exit code")
+	} else if exitCode != 0 {
+		stderr := reader.Stderr()
+		return fmt.Errorf("dump command exited with code %d (%s/%s): %s", exitCode, ctr.Name, dbType, stderr)
 	}
 
 	log.Info().
