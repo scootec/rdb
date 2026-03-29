@@ -49,12 +49,14 @@ func dumpDatabase(ctx context.Context, dc *docker.Client, rc *restic.Runner, ctr
 		}
 
 	case "mariadb":
-		password = ctr.Env["MARIADB_ROOT_PASSWORD"]
-		if password == "" {
-			password = ctr.Env["MYSQL_ROOT_PASSWORD"]
-		}
-		user = "root"
-		if password == "" {
+		// MariaDB images typically configure root with unix socket auth,
+		// so password-based root login fails. When a root password env var
+		// is present we know MariaDB is installed and can use socket auth
+		// by exec'ing as root without a password. Only fall back to
+		// password auth for non-root users.
+		if ctr.Env["MARIADB_ROOT_PASSWORD"] != "" || ctr.Env["MYSQL_ROOT_PASSWORD"] != "" {
+			user = "root"
+		} else {
 			user = ctr.Env["MARIADB_USER"]
 			if user == "" {
 				user = ctr.Env["MYSQL_USER"]
