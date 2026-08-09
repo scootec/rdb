@@ -15,24 +15,37 @@ import (
 )
 
 // execReader wraps a hijacked Docker exec connection and demultiplexes the
-// Docker stream protocol into plain stdout bytes.
+// Docker stream protocol into plain stdout bytes. When ctx is cancelled the
+// hijacked connection is closed, which unblocks any in-flight Read.
 type execReader struct {
 	cli    *client.Client
 	execID string
 	conn   types.HijackedResponse
+	ctx    context.Context
 
 	// pr/pw are the demuxed pipe ends
 	pr *io.PipeReader
 	pw *io.PipeWriter
 
-	stderr  bytes.Buffer
-	started bool
-	done    chan struct{}
+	stderr    bytes.Buffer
+	started   bool
+	done      chan struct{}
+	stopWatch func() bool
 }
 
 func (r *execReader) start() {
 	r.pr, r.pw = io.Pipe()
 	r.done = make(chan struct{})
+	if r.ctx != nil {
+		// Reads on the hijacked connection do not honour context on their
+		// own: closing the connection is the only way to unblock them. The
+		// pipe is failed with the context's error first so readers see
+		// context.Canceled/DeadlineExceeded rather than a network error.
+		r.stopWatch = context.AfterFunc(r.ctx, func() {
+			r.pw.CloseWithError(r.ctx.Err())
+			r.conn.Close()
+		})
+	}
 	go func() {
 		defer close(r.done)
 		_, err := stdcopy.StdCopy(r.pw, &r.stderr, r.conn.Reader)
@@ -56,6 +69,9 @@ func (r *execReader) Stderr() string {
 func (r *execReader) Close() error {
 	if !r.started {
 		r.start()
+	}
+	if r.stopWatch != nil {
+		r.stopWatch()
 	}
 	// Drain and close
 	r.pr.Close()
@@ -86,6 +102,11 @@ func (c *Client) ExecImport(ctx context.Context, containerID string, cmd []strin
 	}
 	defer resp.Close()
 
+	// I/O on the hijacked connection does not honour context on its own:
+	// closing the connection is the only way to unblock the copies below.
+	stopWatch := context.AfterFunc(ctx, func() { resp.Close() })
+	defer stopWatch()
+
 	// Stream stdin into the exec process
 	errCh := make(chan error, 1)
 	go func() {
@@ -102,7 +123,11 @@ func (c *Client) ExecImport(ctx context.Context, containerID string, cmd []strin
 		log.Debug().Err(demuxErr).Msg("demuxing exec output")
 	}
 
-	if copyErr := <-errCh; copyErr != nil {
+	copyErr := <-errCh
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("exec import cancelled: %w", ctxErr)
+	}
+	if copyErr != nil {
 		return fmt.Errorf("writing stdin to exec: %w", copyErr)
 	}
 

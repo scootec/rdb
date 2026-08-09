@@ -38,6 +38,10 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 
 	var errs []error
 	for _, ctr := range containers {
+		if err := ctx.Err(); err != nil {
+			log.Warn().Err(err).Msg("backup run cancelled, skipping remaining containers")
+			return fmt.Errorf("backup run cancelled: %w", err)
+		}
 		if err := o.backupContainer(ctx, ctr); err != nil {
 			log.Error().Err(err).Str("container", ctr.Name).Msg("backup failed")
 			errs = append(errs, err)

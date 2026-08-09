@@ -37,7 +37,7 @@ type fakeRestic struct {
 	addedTags      []string
 }
 
-func (f *fakeRestic) BackupFromStdin(filename string, reader io.Reader, tags []string) (string, error) {
+func (f *fakeRestic) BackupFromStdin(_ context.Context, filename string, reader io.Reader, tags []string) (string, error) {
 	f.backupFilename = filename
 	f.backupTags = tags
 	n, _ := io.Copy(io.Discard, reader)
@@ -45,12 +45,12 @@ func (f *fakeRestic) BackupFromStdin(filename string, reader io.Reader, tags []s
 	return f.snapshotID, f.backupErr
 }
 
-func (f *fakeRestic) ForgetSnapshot(snapshotID string) error {
+func (f *fakeRestic) ForgetSnapshot(_ context.Context, snapshotID string) error {
 	f.forgotten = append(f.forgotten, snapshotID)
 	return f.forgetErr
 }
 
-func (f *fakeRestic) TagSnapshot(snapshotID string, tags []string) error {
+func (f *fakeRestic) TagSnapshot(_ context.Context, snapshotID string, tags []string) error {
 	f.tagged = append(f.tagged, snapshotID)
 	f.addedTags = append(f.addedTags, tags...)
 	return f.tagErr

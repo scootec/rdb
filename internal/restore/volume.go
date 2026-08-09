@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/rs/zerolog/log"
 	"github.com/scootec/rdb/internal/docker"
@@ -51,7 +52,7 @@ func (r *Restorer) restoreVolume(ctx context.Context, snap restic.Snapshot, opts
 		Strs("paths", snap.Paths).
 		Msg("restoring volume snapshot — files will be overwritten at their original paths")
 
-	restoreErr := r.rc.Restore(snap.ID, "/", snap.Paths)
+	restoreErr := r.rc.Restore(ctx, snap.ID, "/", snap.Paths)
 
 	// Restart a container stopped via --stop even if the restore failed,
 	// so the stack is not left down.
@@ -100,8 +101,12 @@ func (r *Restorer) guardOwningContainer(ctx context.Context, snap restic.Snapsho
 			return nil, fmt.Errorf("stopping container %s: %w", ctr.Name, err)
 		}
 		return func() {
+			// Restart even if the restore was cancelled, on a context
+			// detached from the run's cancellation.
+			restartCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+			defer cancel()
 			log.Info().Str("container", ctr.Name).Msg("restarting container after volume restore")
-			if startErr := r.dc.StartContainer(ctx, ctr.ID); startErr != nil {
+			if startErr := r.dc.StartContainer(restartCtx, ctr.ID); startErr != nil {
 				log.Error().Err(startErr).Str("container", ctr.Name).Msg("failed to restart container")
 			}
 		}, nil

@@ -31,7 +31,7 @@ func New(dc *docker.Client, rc *restic.Runner) *Restorer {
 
 // Restore restores data from the given snapshot.
 func (r *Restorer) Restore(ctx context.Context, opts Options) error {
-	snaps, err := r.rc.SnapshotsByID(opts.SnapshotID)
+	snaps, err := r.rc.SnapshotsByID(ctx, opts.SnapshotID)
 	if err != nil {
 		return fmt.Errorf("looking up snapshot %s: %w", opts.SnapshotID, err)
 	}

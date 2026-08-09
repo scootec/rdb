@@ -2,12 +2,14 @@ package restic
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strconv"
+	"time"
 
 	"github.com/rs/zerolog/log"
 )
@@ -63,20 +65,39 @@ func New(hostname string) *Runner {
 	return &Runner{hostname: hostname}
 }
 
+// resticBinary is the restic executable name; a variable so tests can
+// substitute a harmless command.
+var resticBinary = "restic"
+
+// interruptWaitDelay is how long a cancelled restic process gets to exit
+// after SIGINT before it is killed.
+const interruptWaitDelay = 10 * time.Second
+
+// newCmd builds a restic command bound to ctx. On cancellation the process
+// receives SIGINT — restic then removes its repository locks and exits — and
+// is killed if it is still running after interruptWaitDelay.
+func newCmd(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, resticBinary, args...)
+	cmd.Env = os.Environ()
+	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+	cmd.WaitDelay = interruptWaitDelay
+	return cmd
+}
+
 // InitRepo initialises the restic repository if it does not exist yet.
 // It first checks with "restic cat config"; only runs "restic init" if needed.
-func (r *Runner) InitRepo() error {
-	if err := r.runQuiet("cat", "config"); err == nil {
+func (r *Runner) InitRepo(ctx context.Context) error {
+	if err := r.runQuiet(ctx, "cat", "config"); err == nil {
 		log.Debug().Msg("restic repository already initialised")
 		return nil
 	}
 	log.Info().Msg("no existing restic repository found, creating a new one")
-	return r.run(nil, "init")
+	return r.run(ctx, nil, "init")
 }
 
 // BackupDir runs "restic backup <path>" and tags the snapshot with the given tags.
-func (r *Runner) BackupDir(path string, tags []string) error {
-	return r.run(nil, backupDirArgs(path, r.hostname, tags)...)
+func (r *Runner) BackupDir(ctx context.Context, path string, tags []string) error {
+	return r.run(ctx, nil, backupDirArgs(path, r.hostname, tags)...)
 }
 
 func backupDirArgs(path, host string, tags []string) []string {
@@ -96,8 +117,8 @@ func backupDirArgs(path, host string, tags []string) []string {
 // snapshot was committed before the failure, so callers can clean it up. An
 // empty ID with a nil error means the backup succeeded but the summary could
 // not be parsed.
-func (r *Runner) BackupFromStdin(filename string, reader io.Reader, tags []string) (string, error) {
-	out, err := r.runCapture(reader, backupStdinArgs(filename, r.hostname, tags)...)
+func (r *Runner) BackupFromStdin(ctx context.Context, filename string, reader io.Reader, tags []string) (string, error) {
+	out, err := r.runCapture(ctx, reader, backupStdinArgs(filename, r.hostname, tags)...)
 	snapshotID := parseBackupSummary(out)
 	if err != nil {
 		return snapshotID, err
@@ -147,15 +168,15 @@ func parseBackupSummary(out []byte) string {
 }
 
 // Snapshots runs "restic snapshots --latest 1" to verify the repository is accessible.
-func (r *Runner) Snapshots() error {
-	return r.run(nil, "snapshots", "--latest", "1")
+func (r *Runner) Snapshots(ctx context.Context) error {
+	return r.run(ctx, nil, "snapshots", "--latest", "1")
 }
 
 // Forget removes old snapshots according to the retention policy.
 // Only rdb-managed snapshots (tag "rdb") are considered, so foreign snapshots
 // in a shared repository are never touched.
-func (r *Runner) Forget(policy RetentionPolicy) error {
-	return r.run(nil, forgetArgs(policy)...)
+func (r *Runner) Forget(ctx context.Context, policy RetentionPolicy) error {
+	return r.run(ctx, nil, forgetArgs(policy)...)
 }
 
 func forgetArgs(policy RetentionPolicy) []string {
@@ -186,13 +207,13 @@ func forgetArgs(policy RetentionPolicy) []string {
 }
 
 // ForgetSnapshot removes a single snapshot by ID.
-func (r *Runner) ForgetSnapshot(snapshotID string) error {
-	return r.run(nil, "forget", snapshotID)
+func (r *Runner) ForgetSnapshot(ctx context.Context, snapshotID string) error {
+	return r.run(ctx, nil, "forget", snapshotID)
 }
 
 // TagSnapshot adds tags to an existing snapshot.
-func (r *Runner) TagSnapshot(snapshotID string, tags []string) error {
-	return r.run(nil, tagAddArgs(snapshotID, tags)...)
+func (r *Runner) TagSnapshot(ctx context.Context, snapshotID string, tags []string) error {
+	return r.run(ctx, nil, tagAddArgs(snapshotID, tags)...)
 }
 
 func tagAddArgs(snapshotID string, tags []string) []string {
@@ -204,18 +225,18 @@ func tagAddArgs(snapshotID string, tags []string) []string {
 }
 
 // Prune removes unreferenced data from the repository.
-func (r *Runner) Prune() error {
-	return r.run(nil, "prune")
+func (r *Runner) Prune(ctx context.Context) error {
+	return r.run(ctx, nil, "prune")
 }
 
 // Check verifies repository integrity.
-func (r *Runner) Check() error {
-	return r.run(nil, "check")
+func (r *Runner) Check(ctx context.Context) error {
+	return r.run(ctx, nil, "check")
 }
 
 // SnapshotsByID returns snapshot metadata for a specific snapshot ID.
-func (r *Runner) SnapshotsByID(id string) ([]Snapshot, error) {
-	out, err := r.runCapture(nil, "snapshots", id, "--json")
+func (r *Runner) SnapshotsByID(ctx context.Context, id string) ([]Snapshot, error) {
+	out, err := r.runCapture(ctx, nil, "snapshots", id, "--json")
 	if err != nil {
 		return nil, err
 	}
@@ -228,8 +249,8 @@ func (r *Runner) SnapshotsByID(id string) ([]Snapshot, error) {
 
 // SnapshotsAll returns all rdb-managed snapshots, excluding partial-tagged
 // snapshots left behind by failed database dumps.
-func (r *Runner) SnapshotsAll() ([]Snapshot, error) {
-	out, err := r.runCapture(nil, "snapshots", "--tag", "rdb", "--json")
+func (r *Runner) SnapshotsAll(ctx context.Context) ([]Snapshot, error) {
+	out, err := r.runCapture(ctx, nil, "snapshots", "--tag", "rdb", "--json")
 	if err != nil {
 		return nil, err
 	}
@@ -253,8 +274,8 @@ func excludePartial(snaps []Snapshot) []Snapshot {
 
 // Restore runs "restic restore <snapshotID> --target <target> --verify",
 // optionally scoped to the given include paths so only those subtrees are written.
-func (r *Runner) Restore(snapshotID, target string, includes []string) error {
-	return r.run(nil, restoreArgs(snapshotID, target, includes)...)
+func (r *Runner) Restore(ctx context.Context, snapshotID, target string, includes []string) error {
+	return r.run(ctx, nil, restoreArgs(snapshotID, target, includes)...)
 }
 
 func restoreArgs(snapshotID, target string, includes []string) []string {
@@ -267,13 +288,12 @@ func restoreArgs(snapshotID, target string, includes []string) []string {
 
 // Dump runs "restic dump <snapshotID> <path>" and returns stdout as a reader.
 // The caller must close the returned reader.
-func (r *Runner) Dump(snapshotID, path string) (io.ReadCloser, error) {
+func (r *Runner) Dump(ctx context.Context, snapshotID, path string) (io.ReadCloser, error) {
 	args := []string{"dump", snapshotID, path}
 	log.Debug().Strs("args", args).Msg("running restic")
 
-	cmd := exec.Command("restic", args...)
+	cmd := newCmd(ctx, args...)
 	cmd.Stderr = os.Stderr
-	cmd.Env = os.Environ()
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -300,11 +320,10 @@ func (r *cmdReader) Close() error {
 
 // runQuiet executes restic suppressing stdout and stderr.
 // Used for probes where restic's output would confuse the user.
-func (r *Runner) runQuiet(args ...string) error {
+func (r *Runner) runQuiet(ctx context.Context, args ...string) error {
 	log.Debug().Strs("args", args).Msg("running restic")
 
-	cmd := exec.Command("restic", args...)
-	cmd.Env = os.Environ()
+	cmd := newCmd(ctx, args...)
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("restic %v: %w", args, err)
@@ -314,13 +333,12 @@ func (r *Runner) runQuiet(args ...string) error {
 
 // run executes the restic binary with the given arguments.
 // If stdin is non-nil it is connected to the command's stdin.
-func (r *Runner) run(stdin io.Reader, args ...string) error {
+func (r *Runner) run(ctx context.Context, stdin io.Reader, args ...string) error {
 	log.Debug().Strs("args", args).Msg("running restic")
 
-	cmd := exec.Command("restic", args...)
+	cmd := newCmd(ctx, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = os.Environ()
 
 	if stdin != nil {
 		cmd.Stdin = stdin
@@ -336,14 +354,13 @@ func (r *Runner) run(stdin io.Reader, args ...string) error {
 // non-nil it is connected to the command's stdin. Captured output is
 // returned even when the command fails, so callers can inspect partial
 // output (e.g. a backup summary emitted before restic exited non-zero).
-func (r *Runner) runCapture(stdin io.Reader, args ...string) ([]byte, error) {
+func (r *Runner) runCapture(ctx context.Context, stdin io.Reader, args ...string) ([]byte, error) {
 	log.Debug().Strs("args", args).Msg("running restic")
 
-	cmd := exec.Command("restic", args...)
+	cmd := newCmd(ctx, args...)
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = os.Stderr
-	cmd.Env = os.Environ()
 
 	if stdin != nil {
 		cmd.Stdin = stdin

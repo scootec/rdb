@@ -16,7 +16,7 @@ import (
 func (r *Restorer) restoreDatabase(ctx context.Context, snap restic.Snapshot, dbType string, opts Options) error {
 	dumpPath := snap.Paths[0]
 
-	reader, err := r.rc.Dump(snap.ID, dumpPath)
+	reader, err := r.rc.Dump(ctx, snap.ID, dumpPath)
 	if err != nil {
 		return fmt.Errorf("restic dump: %w", err)
 	}
