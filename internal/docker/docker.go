@@ -137,7 +137,7 @@ type ExecDumpReader struct {
 
 // ExecID returns the Docker exec ID for inspecting exit codes.
 func (r *ExecDumpReader) ExecID() string {
-	return r.execReader.execID
+	return r.execID
 }
 
 // ExecDump runs a command inside the target container and returns a reader for
