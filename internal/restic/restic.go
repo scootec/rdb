@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -84,15 +86,109 @@ func newCmd(ctx context.Context, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// InitRepo initialises the restic repository if it does not exist yet.
-// It first checks with "restic cat config"; only runs "restic init" if needed.
-func (r *Runner) InitRepo(ctx context.Context) error {
-	if err := r.runQuiet(ctx, "cat", "config"); err == nil {
-		log.Debug().Msg("restic repository already initialised")
-		return nil
+// Exit codes restic uses to differentiate failures, introduced in restic 0.17
+// (the Dockerfile pins restic/restic:0.17.3). Older restic versions exit 1 for
+// everything; those land in the "unknown" branch below and are reported with
+// the probe's stderr instead of being guessed at.
+const (
+	exitRepoDoesNotExist = 10
+	exitWrongPassword    = 12
+)
+
+// probeAction is the decision derived from a repository probe's exit code.
+type probeAction int
+
+const (
+	probeRepoOK      probeAction = iota // repository exists and is readable
+	probeRepoMissing                    // repository does not exist → safe to init
+	probeFatal                          // unrecoverable (e.g. wrong password) → fail now
+	probeRetry                          // transient or unknown → retry, then fail with stderr
+)
+
+// classifyProbeExit maps a "restic cat config" exit code to the action
+// InitRepo should take.
+func classifyProbeExit(code int) probeAction {
+	switch code {
+	case 0:
+		return probeRepoOK
+	case exitRepoDoesNotExist:
+		return probeRepoMissing
+	case exitWrongPassword:
+		return probeFatal
+	default:
+		return probeRetry
 	}
-	log.Info().Msg("no existing restic repository found, creating a new one")
-	return r.run(ctx, nil, "init")
+}
+
+// initProbeAttempts and initProbeBackoff bound the retry loop in InitRepo so a
+// brief backend outage at startup does not crash-loop the container. The
+// backoff doubles after each failed attempt. Variables so tests can shrink them.
+var (
+	initProbeAttempts = 3
+	initProbeBackoff  = 5 * time.Second
+)
+
+// InitRepo initialises the restic repository if it does not exist yet.
+// It probes with "restic cat config" and branches on restic's exit code:
+// only "repository does not exist" (exit 10) leads to "restic init"; a wrong
+// password (exit 12) fails immediately, and any other failure — transient
+// backend outage, stale lock — is retried with backoff and then reported with
+// the probe's own stderr, never masked by a doomed init attempt.
+func (r *Runner) InitRepo(ctx context.Context) error {
+	backoff := initProbeBackoff
+	for attempt := 1; ; attempt++ {
+		exitCode, stderr, err := r.probe(ctx, "cat", "config")
+		if err != nil {
+			return err
+		}
+		switch classifyProbeExit(exitCode) {
+		case probeRepoOK:
+			log.Debug().Msg("restic repository already initialised")
+			return nil
+		case probeRepoMissing:
+			log.Info().Msg("no existing restic repository found, creating a new one")
+			return r.run(ctx, nil, "init")
+		case probeFatal:
+			return fmt.Errorf("restic repository password is incorrect (check RESTIC_PASSWORD): %s", stderr)
+		}
+		if attempt >= initProbeAttempts {
+			return fmt.Errorf("restic repository check failed after %d attempts (exit code %d): %s", attempt, exitCode, stderr)
+		}
+		log.Warn().
+			Int("exit_code", exitCode).
+			Int("attempt", attempt).
+			Str("stderr", stderr).
+			Dur("retry_in", backoff).
+			Msg("restic repository check failed, retrying")
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+	}
+}
+
+// probe executes restic suppressing stdout but capturing stderr, and returns
+// the process exit code alongside the trimmed stderr. A non-zero exit is not
+// an error here; err is non-nil only when the command could not be run at all
+// (e.g. missing binary) — callers branch on the exit code.
+func (r *Runner) probe(ctx context.Context, args ...string) (int, string, error) {
+	log.Debug().Strs("args", args).Msg("running restic")
+
+	cmd := newCmd(ctx, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err == nil {
+		return 0, "", nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode(), strings.TrimSpace(stderr.String()), nil
+	}
+	return 0, "", fmt.Errorf("restic %v: %w", args, err)
 }
 
 // BackupDir runs "restic backup <path>" and tags the snapshot with the given tags.
@@ -316,19 +412,6 @@ type cmdReader struct {
 func (r *cmdReader) Close() error {
 	r.ReadCloser.Close()
 	return r.cmd.Wait()
-}
-
-// runQuiet executes restic suppressing stdout and stderr.
-// Used for probes where restic's output would confuse the user.
-func (r *Runner) runQuiet(ctx context.Context, args ...string) error {
-	log.Debug().Strs("args", args).Msg("running restic")
-
-	cmd := newCmd(ctx, args...)
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("restic %v: %w", args, err)
-	}
-	return nil
 }
 
 // run executes the restic binary with the given arguments.

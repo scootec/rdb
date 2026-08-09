@@ -2,7 +2,11 @@ package restic
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -232,6 +236,153 @@ func TestRestoreArgs(t *testing.T) {
 				t.Errorf("restoreArgs(%q, %q, %v) = %v, want %v", tt.snapshotID, tt.target, tt.includes, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestClassifyProbeExit(t *testing.T) {
+	tests := []struct {
+		name string
+		code int
+		want probeAction
+	}{
+		{"success means repo exists", 0, probeRepoOK},
+		{"exit 10 means repo missing", exitRepoDoesNotExist, probeRepoMissing},
+		{"exit 12 means wrong password", exitWrongPassword, probeFatal},
+		{"generic failure retries", 1, probeRetry},
+		{"lock failure retries", 11, probeRetry},
+		{"signal death retries", -1, probeRetry},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyProbeExit(tt.code); got != tt.want {
+				t.Errorf("classifyProbeExit(%d) = %v, want %v", tt.code, got, tt.want)
+			}
+		})
+	}
+}
+
+// fakeRestic installs a shell script as the restic binary that exits with the
+// given code on "cat config", writes stderrMsg to stderr, and appends each
+// invocation's first argument to a log file. It returns the log file path.
+func fakeRestic(t *testing.T, probeExit int, stderrMsg string) string {
+	t.Helper()
+	dir := t.TempDir()
+	callLog := filepath.Join(dir, "calls")
+	script := filepath.Join(dir, "restic")
+	body := fmt.Sprintf(`#!/bin/sh
+echo "$1" >> %q
+if [ "$1" = "cat" ]; then
+  echo %q >&2
+  exit %d
+fi
+exit 0
+`, callLog, stderrMsg, probeExit)
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	orig := resticBinary
+	resticBinary = script
+	t.Cleanup(func() { resticBinary = orig })
+
+	origBackoff := initProbeBackoff
+	initProbeBackoff = time.Millisecond
+	t.Cleanup(func() { initProbeBackoff = origBackoff })
+
+	return callLog
+}
+
+// calls returns the commands the fake restic recorded, e.g. ["cat", "init"].
+func calls(t *testing.T, callLog string) []string {
+	t.Helper()
+	data, err := os.ReadFile(callLog)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatal(err)
+	}
+	return strings.Fields(string(data))
+}
+
+func TestInitRepoExistingRepoSkipsInit(t *testing.T) {
+	callLog := fakeRestic(t, 0, "")
+
+	if err := New("").InitRepo(context.Background()); err != nil {
+		t.Fatalf("InitRepo() = %v, want nil for existing repository", err)
+	}
+	if got := calls(t, callLog); !reflect.DeepEqual(got, []string{"cat"}) {
+		t.Errorf("restic invocations = %v, want probe only", got)
+	}
+}
+
+func TestInitRepoMissingRepoRunsInit(t *testing.T) {
+	callLog := fakeRestic(t, exitRepoDoesNotExist, "repository does not exist")
+
+	if err := New("").InitRepo(context.Background()); err != nil {
+		t.Fatalf("InitRepo() = %v, want nil when init succeeds", err)
+	}
+	if got := calls(t, callLog); !reflect.DeepEqual(got, []string{"cat", "init"}) {
+		t.Errorf("restic invocations = %v, want probe then init", got)
+	}
+}
+
+func TestInitRepoWrongPasswordFailsWithoutInitOrRetry(t *testing.T) {
+	callLog := fakeRestic(t, exitWrongPassword, "wrong password or no key found")
+
+	err := New("").InitRepo(context.Background())
+	if err == nil {
+		t.Fatal("InitRepo() = nil, want error for wrong password")
+	}
+	if !strings.Contains(err.Error(), "RESTIC_PASSWORD") || !strings.Contains(err.Error(), "wrong password or no key found") {
+		t.Errorf("InitRepo() error = %q, want mention of RESTIC_PASSWORD and restic's stderr", err)
+	}
+	if got := calls(t, callLog); !reflect.DeepEqual(got, []string{"cat"}) {
+		t.Errorf("restic invocations = %v, want a single probe with no init and no retry", got)
+	}
+}
+
+func TestInitRepoTransientErrorRetriesThenFailsWithStderr(t *testing.T) {
+	callLog := fakeRestic(t, 1, "Fatal: unable to open config file: connection refused")
+
+	err := New("").InitRepo(context.Background())
+	if err == nil {
+		t.Fatal("InitRepo() = nil, want error for transient backend failure")
+	}
+	if !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("InitRepo() error = %q, want probe stderr included", err)
+	}
+	if !strings.Contains(err.Error(), "exit code 1") {
+		t.Errorf("InitRepo() error = %q, want exit code included", err)
+	}
+	got := calls(t, callLog)
+	want := []string{"cat", "cat", "cat"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("restic invocations = %v, want %d probe attempts and no init", got, initProbeAttempts)
+	}
+}
+
+func TestInitRepoCancelledContextStopsRetrying(t *testing.T) {
+	callLog := fakeRestic(t, 1, "backend outage")
+
+	origBackoff := initProbeBackoff
+	initProbeBackoff = time.Hour
+	t.Cleanup(func() { initProbeBackoff = origBackoff })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	err := New("").InitRepo(ctx)
+	if err == nil {
+		t.Fatal("InitRepo() = nil, want error with cancelled context")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("InitRepo() took %v with a cancelled context, want fast failure", elapsed)
+	}
+	if got := calls(t, callLog); len(got) > 1 {
+		t.Errorf("restic invocations = %v, want no retries after context cancellation", got)
 	}
 }
 
