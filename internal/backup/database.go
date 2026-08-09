@@ -13,8 +13,66 @@ import (
 
 // dumpDatabase runs a database dump inside the container and pipes it to restic.
 func dumpDatabase(ctx context.Context, dc *docker.Client, rc *restic.Runner, ctr docker.ContainerInfo, dbType string) error {
-	var cmd []string
-	var extraEnv []string
+	cmd, extraEnv, err := buildDumpCmd(ctr, dbType)
+	if err != nil {
+		return err
+	}
+
+	log.Info().
+		Str("container", ctr.Name).
+		Str("db", dbType).
+		Msg("starting database dump")
+
+	reader, _, err := dc.ExecDump(ctx, ctr.ID, cmd, extraEnv)
+	if err != nil {
+		return fmt.Errorf("exec dump %s on %s: %w", dbType, ctr.Name, err)
+	}
+	defer reader.Close()
+
+	stdinFilename := buildDBFilename(ctr, dbType)
+	tags := buildTags(ctr, dbType)
+
+	pr, pw := io.Pipe()
+
+	// Copy exec stdout → pipe writer in background
+	errCh := make(chan error, 1)
+	go func() {
+		_, copyErr := io.Copy(pw, reader)
+		pw.CloseWithError(copyErr)
+		errCh <- copyErr
+	}()
+
+	if err := rc.BackupFromStdin(stdinFilename, pr, tags); err != nil {
+		if stderr := reader.Stderr(); stderr != "" {
+			log.Error().Str("container", ctr.Name).Str("db", dbType).Str("stderr", stderr).Msg("database dump stderr")
+		}
+		return fmt.Errorf("restic backup stdin (%s/%s): %w", ctr.Name, dbType, err)
+	}
+
+	if copyErr := <-errCh; copyErr != nil {
+		return fmt.Errorf("reading dump output (%s/%s): %w", ctr.Name, dbType, copyErr)
+	}
+
+	// Check if the dump command itself failed
+	exitCode, inspectErr := dc.ExecExitCode(ctx, reader.ExecID())
+	if inspectErr != nil {
+		log.Warn().Err(inspectErr).Str("container", ctr.Name).Str("db", dbType).Msg("could not inspect exec exit code")
+	} else if exitCode != 0 {
+		stderr := reader.Stderr()
+		return fmt.Errorf("dump command exited with code %d (%s/%s): %s", exitCode, ctr.Name, dbType, stderr)
+	}
+
+	log.Info().
+		Str("container", ctr.Name).
+		Str("db", dbType).
+		Msg("database dump complete")
+	return nil
+}
+
+// buildDumpCmd returns the dump command and extra environment variables for
+// the given database type, selecting credentials from the container's
+// environment variables.
+func buildDumpCmd(ctr docker.ContainerInfo, dbType string) (cmd []string, extraEnv []string, err error) {
 	var user, password string
 
 	switch dbType {
@@ -79,58 +137,10 @@ func dumpDatabase(ctx context.Context, dc *docker.Client, rc *restic.Runner, ctr
 		}
 
 	default:
-		return fmt.Errorf("unknown database type: %s", dbType)
+		return nil, nil, fmt.Errorf("unknown database type: %s", dbType)
 	}
 
-	log.Info().
-		Str("container", ctr.Name).
-		Str("db", dbType).
-		Msg("starting database dump")
-
-	reader, _, err := dc.ExecDump(ctx, ctr.ID, cmd, extraEnv)
-	if err != nil {
-		return fmt.Errorf("exec dump %s on %s: %w", dbType, ctr.Name, err)
-	}
-	defer reader.Close()
-
-	stdinFilename := buildDBFilename(ctr, dbType)
-	tags := buildTags(ctr, dbType)
-
-	pr, pw := io.Pipe()
-
-	// Copy exec stdout → pipe writer in background
-	errCh := make(chan error, 1)
-	go func() {
-		_, copyErr := io.Copy(pw, reader)
-		pw.CloseWithError(copyErr)
-		errCh <- copyErr
-	}()
-
-	if err := rc.BackupFromStdin(stdinFilename, pr, tags); err != nil {
-		if stderr := reader.Stderr(); stderr != "" {
-			log.Error().Str("container", ctr.Name).Str("db", dbType).Str("stderr", stderr).Msg("database dump stderr")
-		}
-		return fmt.Errorf("restic backup stdin (%s/%s): %w", ctr.Name, dbType, err)
-	}
-
-	if copyErr := <-errCh; copyErr != nil {
-		return fmt.Errorf("reading dump output (%s/%s): %w", ctr.Name, dbType, copyErr)
-	}
-
-	// Check if the dump command itself failed
-	exitCode, inspectErr := dc.ExecExitCode(ctx, reader.ExecID())
-	if inspectErr != nil {
-		log.Warn().Err(inspectErr).Str("container", ctr.Name).Str("db", dbType).Msg("could not inspect exec exit code")
-	} else if exitCode != 0 {
-		stderr := reader.Stderr()
-		return fmt.Errorf("dump command exited with code %d (%s/%s): %s", exitCode, ctr.Name, dbType, stderr)
-	}
-
-	log.Info().
-		Str("container", ctr.Name).
-		Str("db", dbType).
-		Msg("database dump complete")
-	return nil
+	return cmd, extraEnv, nil
 }
 
 func buildDBFilename(ctr docker.ContainerInfo, dbType string) string {

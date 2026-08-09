@@ -26,7 +26,6 @@ type execReader struct {
 	stderr  bytes.Buffer
 	started bool
 	done    chan struct{}
-	err     error
 }
 
 func (r *execReader) start() {
@@ -89,7 +88,7 @@ func (c *Client) ExecImport(ctx context.Context, containerID string, cmd []strin
 	errCh := make(chan error, 1)
 	go func() {
 		_, copyErr := io.Copy(resp.Conn, stdin)
-		resp.CloseWrite()
+		_ = resp.CloseWrite()
 		errCh <- copyErr
 	}()
 
