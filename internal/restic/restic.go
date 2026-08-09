@@ -49,12 +49,18 @@ type RetentionPolicy struct {
 }
 
 // Runner executes restic commands.
-type Runner struct{}
+type Runner struct {
+	// hostname is recorded on every snapshot via "--host". The rdb container's
+	// own hostname is its container ID, which changes on every recreation and
+	// would break restic's parent-snapshot selection for incremental backups.
+	hostname string
+}
 
 // New creates a new Runner. Repository and password are read from environment variables
 // (RESTIC_REPOSITORY, RESTIC_PASSWORD) and passed to restic automatically.
-func New() *Runner {
-	return &Runner{}
+// hostname is set as the snapshot hostname on backups; empty means restic's default.
+func New(hostname string) *Runner {
+	return &Runner{hostname: hostname}
 }
 
 // InitRepo initialises the restic repository if it does not exist yet.
@@ -70,11 +76,18 @@ func (r *Runner) InitRepo() error {
 
 // BackupDir runs "restic backup <path>" and tags the snapshot with the given tags.
 func (r *Runner) BackupDir(path string, tags []string) error {
+	return r.run(nil, backupDirArgs(path, r.hostname, tags)...)
+}
+
+func backupDirArgs(path, host string, tags []string) []string {
 	args := []string{"backup", path}
+	if host != "" {
+		args = append(args, "--host", host)
+	}
 	for _, t := range tags {
 		args = append(args, "--tag", t)
 	}
-	return r.run(nil, args...)
+	return args
 }
 
 // BackupFromStdin streams data from reader into restic using --stdin and
@@ -84,11 +97,7 @@ func (r *Runner) BackupDir(path string, tags []string) error {
 // empty ID with a nil error means the backup succeeded but the summary could
 // not be parsed.
 func (r *Runner) BackupFromStdin(filename string, reader io.Reader, tags []string) (string, error) {
-	args := []string{"backup", "--json", "--stdin", "--stdin-filename", filename}
-	for _, t := range tags {
-		args = append(args, "--tag", t)
-	}
-	out, err := r.runCapture(reader, args...)
+	out, err := r.runCapture(reader, backupStdinArgs(filename, r.hostname, tags)...)
 	snapshotID := parseBackupSummary(out)
 	if err != nil {
 		return snapshotID, err
@@ -99,6 +108,17 @@ func (r *Runner) BackupFromStdin(filename string, reader io.Reader, tags []strin
 		log.Debug().Str("snapshot", snapshotID).Msg("created snapshot")
 	}
 	return snapshotID, nil
+}
+
+func backupStdinArgs(filename, host string, tags []string) []string {
+	args := []string{"backup", "--json", "--stdin", "--stdin-filename", filename}
+	if host != "" {
+		args = append(args, "--host", host)
+	}
+	for _, t := range tags {
+		args = append(args, "--tag", t)
+	}
+	return args
 }
 
 // backupMessage is one line of restic's --json backup output.
@@ -132,9 +152,22 @@ func (r *Runner) Snapshots() error {
 }
 
 // Forget removes old snapshots according to the retention policy.
+// Only rdb-managed snapshots (tag "rdb") are considered, so foreign snapshots
+// in a shared repository are never touched.
 func (r *Runner) Forget(policy RetentionPolicy) error {
+	return r.run(nil, forgetArgs(policy)...)
+}
+
+func forgetArgs(policy RetentionPolicy) []string {
+	// restic's default grouping is (hostname, paths); the container hostname
+	// changes on every recreation, which fragments retention groups and keeps
+	// old groups' snapshots forever. Group by (paths, tags) instead: paths keep
+	// each volume of a multi-volume service in its own group, tags separate
+	// projects/services/components independent of hostname.
 	args := []string{
 		"forget",
+		"--tag", "rdb",
+		"--group-by", "paths,tags",
 		"--keep-daily", strconv.Itoa(policy.Daily),
 		"--keep-weekly", strconv.Itoa(policy.Weekly),
 		"--keep-monthly", strconv.Itoa(policy.Monthly),
@@ -149,7 +182,7 @@ func (r *Runner) Forget(policy RetentionPolicy) error {
 	if policy.Within != "" {
 		args = append(args, "--keep-within", policy.Within)
 	}
-	return r.run(nil, args...)
+	return args
 }
 
 // ForgetSnapshot removes a single snapshot by ID.

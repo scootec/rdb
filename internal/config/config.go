@@ -22,6 +22,9 @@ type Config struct {
 	IncludeProjectName bool
 	ExcludeBindMounts  bool
 	SkipInit           bool
+	// ResticHostname is recorded as the snapshot hostname on backups so that
+	// parent-snapshot selection survives container recreations.
+	ResticHostname string
 
 	// Retention policy
 	KeepDaily   int
@@ -39,6 +42,7 @@ func Load() (*Config, error) {
 		ResticRepository:   os.Getenv("RESTIC_REPOSITORY"),
 		ResticPassword:     os.Getenv("RESTIC_PASSWORD"),
 		CronSchedule:       envOrDefault("RDB_CRON_SCHEDULE", "0 2 * * *"),
+		ResticHostname:     envOrDefault("RDB_RESTIC_HOSTNAME", "rdb"),
 		LogLevel:           envOrDefault("RDB_LOG_LEVEL", "info"),
 		IncludeProjectName: envBool("RDB_INCLUDE_PROJECT_NAME", false),
 		ExcludeBindMounts:  envBool("RDB_EXCLUDE_BIND_MOUNTS", false),

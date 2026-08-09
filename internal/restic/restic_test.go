@@ -85,6 +85,120 @@ func TestSnapshotHasTag(t *testing.T) {
 	}
 }
 
+func TestBackupDirArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		host string
+		tags []string
+		want []string
+	}{
+		{
+			"host and tags",
+			"/var/lib/docker/volumes/myapp_data/_data", "rdb",
+			[]string{"rdb", "volume", "project:myapp", "service:app"},
+			[]string{
+				"backup", "/var/lib/docker/volumes/myapp_data/_data",
+				"--host", "rdb",
+				"--tag", "rdb", "--tag", "volume", "--tag", "project:myapp", "--tag", "service:app",
+			},
+		},
+		{
+			"empty host omits --host",
+			"/data", "", []string{"rdb"},
+			[]string{"backup", "/data", "--tag", "rdb"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := backupDirArgs(tt.path, tt.host, tt.tags); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("backupDirArgs(%q, %q, %v) = %v, want %v", tt.path, tt.host, tt.tags, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBackupStdinArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		filename string
+		host     string
+		tags     []string
+		want     []string
+	}{
+		{
+			"host and tags",
+			"databases/myapp/db/postgres/all_databases.sql", "rdb",
+			[]string{"rdb", "postgres", "project:myapp", "service:db"},
+			[]string{
+				"backup", "--json", "--stdin", "--stdin-filename", "databases/myapp/db/postgres/all_databases.sql",
+				"--host", "rdb",
+				"--tag", "rdb", "--tag", "postgres", "--tag", "project:myapp", "--tag", "service:db",
+			},
+		},
+		{
+			"empty host omits --host",
+			"dump.sql", "", nil,
+			[]string{"backup", "--json", "--stdin", "--stdin-filename", "dump.sql"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := backupStdinArgs(tt.filename, tt.host, tt.tags); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("backupStdinArgs(%q, %q, %v) = %v, want %v", tt.filename, tt.host, tt.tags, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestForgetArgs(t *testing.T) {
+	tests := []struct {
+		name   string
+		policy RetentionPolicy
+		want   []string
+	}{
+		{
+			"base policy scopes to rdb tag and groups by paths,tags",
+			RetentionPolicy{Daily: 7, Weekly: 4, Monthly: 12, Yearly: 3},
+			[]string{
+				"forget",
+				"--tag", "rdb",
+				"--group-by", "paths,tags",
+				"--keep-daily", "7",
+				"--keep-weekly", "4",
+				"--keep-monthly", "12",
+				"--keep-yearly", "3",
+			},
+		},
+		{
+			"optional keeps appended when set",
+			RetentionPolicy{Daily: 7, Weekly: 4, Monthly: 12, Yearly: 3, Last: 5, Hourly: 24, Within: "30d"},
+			[]string{
+				"forget",
+				"--tag", "rdb",
+				"--group-by", "paths,tags",
+				"--keep-daily", "7",
+				"--keep-weekly", "4",
+				"--keep-monthly", "12",
+				"--keep-yearly", "3",
+				"--keep-last", "5",
+				"--keep-hourly", "24",
+				"--keep-within", "30d",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := forgetArgs(tt.policy); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("forgetArgs(%+v) = %v, want %v", tt.policy, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRestoreArgs(t *testing.T) {
 	tests := []struct {
 		name       string
