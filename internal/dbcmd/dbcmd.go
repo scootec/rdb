@@ -76,7 +76,11 @@ func DumpCmd(env map[string]string, dbType string) (cmd []string, extraEnv []str
 	switch dbType {
 	case "postgres":
 		c := postgresCreds(env)
-		return []string{"pg_dumpall", "-U", c.user}, pgExtraEnv(c), nil
+		// --clean --if-exists emits guarded DROP statements before each
+		// CREATE, so restoring into a non-empty cluster converges to the
+		// backup state instead of failing with "already exists" and
+		// duplicate-key errors.
+		return []string{"pg_dumpall", "--clean", "--if-exists", "-U", c.user}, pgExtraEnv(c), nil
 
 	case "mysql":
 		c := mysqlCreds(env)
@@ -86,6 +90,14 @@ func DumpCmd(env map[string]string, dbType string) (cmd []string, extraEnv []str
 			"--all-databases",
 			"--single-transaction",
 			"--compact",
+			// --add-drop-table must come after --compact, which disables
+			// the default per-table DROP statements (last flag wins). The
+			// drops make a restore into a non-empty server converge to the
+			// backup state. --add-drop-database is not an option: with
+			// --all-databases it emits DROP DATABASE for the mysql system
+			// schema, which MySQL 8.0+ refuses to drop, aborting the
+			// restore.
+			"--add-drop-table",
 			"--force",
 		}
 		return cmd, mysqlExtraEnv(c), nil
@@ -98,6 +110,10 @@ func DumpCmd(env map[string]string, dbType string) (cmd []string, extraEnv []str
 			"--all-databases",
 			"--single-transaction",
 			"--compact",
+			// See the mysql case: --add-drop-table must follow --compact,
+			// and --add-drop-database would drop the mysql system schema
+			// (the grant tables) mid-restore.
+			"--add-drop-table",
 			"--force",
 		}
 		return cmd, mysqlExtraEnv(c), nil
@@ -118,7 +134,13 @@ func ImportCmd(env map[string]string, dbType string) (cmd []string, extraEnv []s
 		// instead of logging and continuing with exit 0. pg_dumpall output
 		// cannot run inside --single-transaction, so this is the only
 		// reliable failure signal for restores.
-		return []string{"psql", "--set", "ON_ERROR_STOP=on", "-U", c.user}, pgExtraEnv(c), nil
+		//
+		// Connect to the postgres maintenance database explicitly: without
+		// -d, psql connects to the database named after the user, which a
+		// --clean dump drops — and dropping the currently open database is
+		// an error. pg_dumpall never emits a top-level DROP for "postgres"
+		// (it drops/recreates it only while connected elsewhere).
+		return []string{"psql", "--set", "ON_ERROR_STOP=on", "-U", c.user, "-d", "postgres"}, pgExtraEnv(c), nil
 
 	case "mysql":
 		c := mysqlCreds(env)
