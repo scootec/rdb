@@ -5,11 +5,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/rs/zerolog/log"
 )
 
 // execReader wraps a hijacked Docker exec connection and demultiplexes the
@@ -92,11 +94,20 @@ func (c *Client) ExecImport(ctx context.Context, containerID string, cmd []strin
 		errCh <- copyErr
 	}()
 
-	// Drain stdout/stderr (log any output as debug)
-	_, _ = io.Copy(io.Discard, resp.Reader)
+	// Demux stdout/stderr, keeping a bounded copy of each: stderr is
+	// surfaced when the command fails, stdout is logged at debug level.
+	stdout := newBoundedBuffer(execOutputLimit)
+	stderr := newBoundedBuffer(execOutputLimit)
+	if _, demuxErr := stdcopy.StdCopy(stdout, stderr, resp.Reader); demuxErr != nil {
+		log.Debug().Err(demuxErr).Msg("demuxing exec output")
+	}
 
 	if copyErr := <-errCh; copyErr != nil {
 		return fmt.Errorf("writing stdin to exec: %w", copyErr)
+	}
+
+	if stdout.Len() > 0 {
+		log.Debug().Str("stdout", stdout.String()).Msg("import command output")
 	}
 
 	exitCode, err := c.ExecExitCode(ctx, execID.ID)
@@ -104,9 +115,46 @@ func (c *Client) ExecImport(ctx context.Context, containerID string, cmd []strin
 		return err
 	}
 	if exitCode != 0 {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return fmt.Errorf("exec command exited with code %d: %s", exitCode, msg)
+		}
 		return fmt.Errorf("exec command exited with code %d", exitCode)
 	}
 	return nil
+}
+
+// execOutputLimit caps how much exec stdout/stderr is retained in memory.
+const execOutputLimit = 32 * 1024
+
+// boundedBuffer keeps the first limit bytes written to it and silently
+// discards the rest, so a chatty exec command cannot grow memory unbounded.
+type boundedBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func newBoundedBuffer(limit int) *boundedBuffer {
+	return &boundedBuffer{limit: limit}
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	if remaining := b.limit - b.buf.Len(); remaining < n {
+		p = p[:remaining]
+		b.truncated = true
+	}
+	b.buf.Write(p)
+	return n, nil
+}
+
+func (b *boundedBuffer) Len() int { return b.buf.Len() }
+
+func (b *boundedBuffer) String() string {
+	if b.truncated {
+		return b.buf.String() + " [output truncated]"
+	}
+	return b.buf.String()
 }
 
 // ExitCode returns the exit code of the exec after the reader has been fully consumed and closed.

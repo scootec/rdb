@@ -67,7 +67,11 @@ func buildImportCmd(ctr *docker.ContainerInfo, dbType string) (cmd []string, ext
 			user = "postgres"
 		}
 		password := ctr.Env["POSTGRES_PASSWORD"]
-		cmd = []string{"psql", "-U", user}
+		// ON_ERROR_STOP makes psql exit non-zero on the first SQL error
+		// instead of logging and continuing with exit 0. pg_dumpall output
+		// cannot run inside --single-transaction, so this is the only
+		// reliable failure signal for restores.
+		cmd = []string{"psql", "--set", "ON_ERROR_STOP=on", "-U", user}
 		if password != "" {
 			extraEnv = []string{"PGPASSWORD=" + password}
 		}
