@@ -144,6 +144,7 @@ def456    2026-03-28 02:00  volume     myapp      app        /var/lib/docker/vol
    ```sh
    docker exec rdb rdb restore <db-snapshot-id>
    ```
+   Make sure no applications are connected to the database during the restore — PostgreSQL refuses to drop a database with active connections, which aborts the restore.
 
 3. Restore volumes (with app containers stopped so nothing writes to the data directories):
    ```sh
@@ -156,6 +157,18 @@ def456    2026-03-28 02:00  volume     myapp      app        /var/lib/docker/vol
    ```
 
 rdb automatically detects the snapshot type (volume, PostgreSQL, MySQL, MariaDB) from tags and locates the target container by its Compose project and service labels.
+
+### What a database restore does
+
+Database dumps are created with clean/drop statements (`pg_dumpall --clean --if-exists` for PostgreSQL, `--add-drop-table` for MySQL/MariaDB), so a restore does not require an empty server:
+
+- Every database, role, and table **present in the backup** is dropped and recreated, so those objects end up exactly in the backup state — no "already exists" or duplicate-key errors.
+- Objects created **after** the backup was taken (extra databases, roles, or tables that are not in the backup) are **not** removed. If you need a target that exactly matches the backup, restore into a fresh database container.
+- For PostgreSQL, statements affecting the role the restore connects as (`POSTGRES_USER`) are skipped — that role always already exists in the target, and PostgreSQL would reject dropping it. Its attributes are still applied via `ALTER ROLE`.
+
+The import fails loudly on the first unexpected SQL error instead of continuing with partial data.
+
+Snapshots taken with older rdb versions (before clean/drop statements were added) still restore into a **fresh** database container, but restoring them into a non-empty server will fail on the first "already exists" error.
 
 ### Volume restore safety
 

@@ -47,9 +47,17 @@ func (r *Restorer) restoreDatabase(ctx context.Context, snap restic.Snapshot, db
 	log.Warn().
 		Str("container", ctr.Name).
 		Str("db", dbType).
-		Msg("restoring database — this will overwrite existing data")
+		Msg("restoring database — objects in the backup are dropped and recreated from the backup; objects created after the backup are left in place")
 
-	if err := r.dc.ExecImport(ctx, ctr.ID, cmd, extraEnv, reader); err != nil {
+	// The filter strips statements the dump expects to fail (see
+	// dbcmd.ImportFilter); closing it releases the filter goroutine if the
+	// import stops before draining the stream.
+	filtered := dbcmd.ImportFilter(reader, ctr.Env, dbType)
+	if closer, ok := filtered.(io.Closer); ok {
+		defer closer.Close()
+	}
+
+	if err := r.dc.ExecImport(ctx, ctr.ID, cmd, extraEnv, filtered); err != nil {
 		return fmt.Errorf("importing %s dump into %s: %w", dbType, ctr.Name, err)
 	}
 
