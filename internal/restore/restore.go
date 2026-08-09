@@ -14,6 +14,8 @@ import (
 type Options struct {
 	SnapshotID string
 	OutputPath string // non-empty = dump SQL to file instead of importing
+	Force      bool   // volume restore: proceed even if the owning container is running
+	Stop       bool   // volume restore: stop the owning container, restore, then restart it
 }
 
 // Restorer handles restoring data from restic snapshots.
@@ -52,7 +54,7 @@ func (r *Restorer) Restore(ctx context.Context, opts Options) error {
 		log.Info().
 			Str("snapshot", snap.ShortID).
 			Msg("restoring volume snapshot")
-		return r.restoreVolume(ctx, snap)
+		return r.restoreVolume(ctx, snap, opts)
 	}
 
 	return fmt.Errorf("snapshot %s has no recognized rdb type tags", snap.ShortID)

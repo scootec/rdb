@@ -203,16 +203,24 @@ func tagValue(snap restic.Snapshot, prefix string) string {
 
 func runRestore(cfg *config.Config) {
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "Usage: rdb restore <snapshot-id> [--output <path>]")
+		fmt.Fprintln(os.Stderr, "Usage: rdb restore <snapshot-id> [--output <path>] [--stop] [--force]")
 		os.Exit(1)
 	}
 
 	snapshotID := os.Args[2]
 	var outputPath string
+	var force, stop bool
 	for i := 3; i < len(os.Args); i++ {
-		if os.Args[i] == "--output" && i+1 < len(os.Args) {
-			outputPath = os.Args[i+1]
-			i++
+		switch os.Args[i] {
+		case "--output":
+			if i+1 < len(os.Args) {
+				outputPath = os.Args[i+1]
+				i++
+			}
+		case "--force":
+			force = true
+		case "--stop":
+			stop = true
 		}
 	}
 
@@ -229,6 +237,8 @@ func runRestore(cfg *config.Config) {
 	if err := restorer.Restore(ctx, restore.Options{
 		SnapshotID: snapshotID,
 		OutputPath: outputPath,
+		Force:      force,
+		Stop:       stop,
 	}); err != nil {
 		log.Fatal().Err(err).Msg("restore failed")
 	}
