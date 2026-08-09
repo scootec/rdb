@@ -117,10 +117,38 @@ func runScheduler(cfg *config.Config) {
 		}
 	}
 
-	err = scheduler.Run(cfg.CronSchedule, func(ctx context.Context) error {
-		return orch.Run(ctx)
-	})
-	if err != nil {
+	policy := retentionPolicy(cfg)
+
+	jobs := []scheduler.Job{
+		{
+			Name:     "backup",
+			Schedule: cfg.CronSchedule,
+			Fn: func(ctx context.Context) error {
+				if err := orch.Run(ctx); err != nil {
+					return err
+				}
+				log.Info().Msg("applying retention policy")
+				return rc.Forget(policy)
+			},
+		},
+	}
+
+	if cfg.MaintenanceEnabled() {
+		jobs = append(jobs, scheduler.Job{
+			Name:     "maintenance",
+			Schedule: cfg.MaintenanceCron,
+			Fn: func(ctx context.Context) error {
+				if err := rc.Prune(); err != nil {
+					return err
+				}
+				return rc.Check()
+			},
+		})
+	} else {
+		log.Warn().Msg("scheduled maintenance disabled (RDB_MAINTENANCE_CRON is empty or 'off') — run 'rdb maintenance' manually to prune and check the repository")
+	}
+
+	if err := scheduler.Run(jobs); err != nil {
 		log.Fatal().Err(err).Msg("scheduler error")
 	}
 }

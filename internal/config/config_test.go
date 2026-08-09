@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"testing"
 )
 
@@ -88,16 +89,21 @@ func TestEnvInt(t *testing.T) {
 
 func TestLoad(t *testing.T) {
 	// Clear every variable Load reads so ambient environment cannot leak in.
+	// t.Setenv registers restoration of the original value; the subsequent
+	// Unsetenv makes the variable truly unset (set-but-empty is meaningful
+	// for RDB_MAINTENANCE_CRON).
 	clearEnv := func(t *testing.T) {
 		for _, key := range []string{
 			"RESTIC_REPOSITORY", "RESTIC_PASSWORD",
-			"RDB_CRON_SCHEDULE", "RDB_LOG_LEVEL",
+			"RDB_CRON_SCHEDULE", "RDB_MAINTENANCE_CRON", "RDB_LOG_LEVEL",
 			"RDB_INCLUDE_PROJECT_NAME", "RDB_EXCLUDE_BIND_MOUNTS", "RDB_SKIP_INIT",
+			"RDB_RESTIC_HOSTNAME",
 			"RESTIC_KEEP_DAILY", "RESTIC_KEEP_WEEKLY", "RESTIC_KEEP_MONTHLY",
 			"RESTIC_KEEP_YEARLY", "RESTIC_KEEP_LAST", "RESTIC_KEEP_HOURLY",
 			"RESTIC_KEEP_WITHIN",
 		} {
 			t.Setenv(key, "")
+			os.Unsetenv(key)
 		}
 	}
 
@@ -129,6 +135,15 @@ func TestLoad(t *testing.T) {
 		if cfg.CronSchedule != "0 2 * * *" {
 			t.Errorf("CronSchedule = %q, want %q", cfg.CronSchedule, "0 2 * * *")
 		}
+		if cfg.MaintenanceCron != "0 4 * * 0" {
+			t.Errorf("MaintenanceCron = %q, want %q", cfg.MaintenanceCron, "0 4 * * 0")
+		}
+		if !cfg.MaintenanceEnabled() {
+			t.Error("MaintenanceEnabled() = false, want true by default")
+		}
+		if cfg.ResticHostname != "rdb" {
+			t.Errorf("ResticHostname = %q, want %q", cfg.ResticHostname, "rdb")
+		}
 		if cfg.LogLevel != "info" {
 			t.Errorf("LogLevel = %q, want %q", cfg.LogLevel, "info")
 		}
@@ -151,6 +166,8 @@ func TestLoad(t *testing.T) {
 		t.Setenv("RESTIC_REPOSITORY", "s3:s3.example.com/bucket")
 		t.Setenv("RESTIC_PASSWORD", "pw")
 		t.Setenv("RDB_CRON_SCHEDULE", "*/15 * * * *")
+		t.Setenv("RDB_MAINTENANCE_CRON", "30 3 * * 6")
+		t.Setenv("RDB_RESTIC_HOSTNAME", "my-backup-host")
 		t.Setenv("RDB_LOG_LEVEL", "debug")
 		t.Setenv("RDB_INCLUDE_PROJECT_NAME", "true")
 		t.Setenv("RDB_EXCLUDE_BIND_MOUNTS", "1")
@@ -179,6 +196,42 @@ func TestLoad(t *testing.T) {
 		if cfg.KeepDaily != 14 || cfg.KeepLast != 5 || cfg.KeepWithin != "30d" {
 			t.Errorf("KeepDaily/KeepLast/KeepWithin = %d/%d/%q, want 14/5/30d",
 				cfg.KeepDaily, cfg.KeepLast, cfg.KeepWithin)
+		}
+		if cfg.MaintenanceCron != "30 3 * * 6" {
+			t.Errorf("MaintenanceCron = %q, want %q", cfg.MaintenanceCron, "30 3 * * 6")
+		}
+		if cfg.ResticHostname != "my-backup-host" {
+			t.Errorf("ResticHostname = %q, want %q", cfg.ResticHostname, "my-backup-host")
+		}
+	})
+
+	t.Run("empty RDB_MAINTENANCE_CRON disables maintenance", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("RESTIC_REPOSITORY", "/repo")
+		t.Setenv("RESTIC_PASSWORD", "pw")
+		t.Setenv("RDB_MAINTENANCE_CRON", "")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() unexpected error: %v", err)
+		}
+		if cfg.MaintenanceEnabled() {
+			t.Error("MaintenanceEnabled() = true, want false for empty value")
+		}
+	})
+
+	t.Run("RDB_MAINTENANCE_CRON=off disables maintenance", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("RESTIC_REPOSITORY", "/repo")
+		t.Setenv("RESTIC_PASSWORD", "pw")
+		t.Setenv("RDB_MAINTENANCE_CRON", "OFF")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() unexpected error: %v", err)
+		}
+		if cfg.MaintenanceEnabled() {
+			t.Error("MaintenanceEnabled() = true, want false for 'OFF'")
 		}
 	})
 }

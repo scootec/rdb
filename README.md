@@ -37,7 +37,7 @@ volumes:
   app-data:
 ```
 
-rdb initialises the repository on first run and then backs up on the configured schedule (default: 02:00 daily).
+rdb initialises the repository on first run, backs up on the configured schedule (default: 02:00 daily), applies the retention policy after each backup cycle, and prunes + checks the repository weekly (default: 04:00 Sunday). See [Retention and maintenance](#retention-and-maintenance).
 
 ## Container labels
 
@@ -58,6 +58,8 @@ rdb initialises the repository on first run and then backs up on the configured 
 | `RESTIC_REPOSITORY` | **required** | Restic repository URL |
 | `RESTIC_PASSWORD` | **required** | Repository encryption password |
 | `RDB_CRON_SCHEDULE` | `0 2 * * *` | Backup schedule (5-field cron) |
+| `RDB_MAINTENANCE_CRON` | `0 4 * * 0` | Prune + check schedule (5-field cron). Empty or `off` disables scheduled maintenance |
+| `RDB_RESTIC_HOSTNAME` | `rdb` | Stable hostname recorded on snapshots (see [Retention and maintenance](#retention-and-maintenance)) |
 | `RDB_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `RDB_EXCLUDE_BIND_MOUNTS` | `false` | Skip host bind mounts during volume backup |
 | `RDB_SKIP_INIT` | `false` | Skip automatic repository initialisation |
@@ -70,6 +72,28 @@ rdb initialises the repository on first run and then backs up on the configured 
 | `RESTIC_KEEP_WITHIN` | `` (off) | Keep all snapshots within a duration (e.g. `2w3d`, `1y`) |
 
 All backend credentials recognised by restic (`AWS_*`, `B2_*`, `AZURE_*`, `GOOGLE_*`, etc.) are passed through automatically.
+
+## Retention and maintenance
+
+With the default `rdb run` deployment:
+
+| What | When | Purpose |
+|---|---|---|
+| `restic backup` | `RDB_CRON_SCHEDULE` (default 02:00 daily) | Back up volumes and database dumps |
+| `restic forget` | after each successful scheduled backup cycle | Apply the `RESTIC_KEEP_*` retention policy |
+| `restic prune` + `restic check` | `RDB_MAINTENANCE_CRON` (default 04:00 Sunday) | Reclaim space from forgotten snapshots and verify repository integrity |
+
+Backup and maintenance never run concurrently — restic maintenance takes exclusive repository locks, so if one job's tick fires while the other is still running, that tick is skipped and logged.
+
+Set `RDB_MAINTENANCE_CRON` to an empty string or `off` to disable scheduled prune + check. `forget` alone only unlinks snapshots; without a periodic `prune` (scheduled or via manual `rdb maintenance`) the repository does not shrink.
+
+Notes on how retention is applied:
+
+- `forget` only considers snapshots tagged `rdb`, so foreign snapshots in a shared repository are never touched.
+- Snapshots are grouped with `--group-by paths,tags` instead of restic's default `(hostname, paths)`. The container's hostname changes on every recreation, which would fragment retention groups and keep old groups' snapshots forever.
+- Backups record a stable hostname (`RDB_RESTIC_HOSTNAME`, default `rdb`) so restic's parent-snapshot selection keeps volume backups incremental across container recreations.
+
+`rdb maintenance` runs forget + prune + check once, immediately, regardless of these schedules.
 
 ## Database credentials
 
@@ -97,12 +121,12 @@ Volumes are stored in restic under their host path. Bind mounts are included by 
 ## CLI commands
 
 ```
-rdb run          Start the cron scheduler (default container entrypoint)
+rdb run          Start the cron scheduler: backups, retention, and maintenance (default container entrypoint)
 rdb backup       Run a backup immediately
 rdb status       Show discovered containers and their backup config
 rdb snapshots    List restic snapshots
 rdb restore      Restore a snapshot (see below)
-rdb maintenance  Run forget + prune + check
+rdb maintenance  Run forget + prune + check immediately
 ```
 
 ## Restoring from backup
