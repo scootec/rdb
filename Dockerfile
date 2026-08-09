@@ -9,5 +9,6 @@ RUN CGO_ENABLED=0 go build -o /rdb ./cmd/rdb
 # Stage 2: Runtime with restic
 FROM restic/restic:0.17.3
 COPY --from=builder /rdb /usr/local/bin/rdb
+HEALTHCHECK --interval=5m --timeout=10s --start-period=1m CMD ["rdb", "health"]
 ENTRYPOINT ["rdb"]
 CMD ["run"]

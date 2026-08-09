@@ -70,6 +70,10 @@ rdb initialises the repository on first run, backs up on the configured schedule
 | `RESTIC_KEEP_LAST` | `0` (off) | Keep the last N snapshots regardless of date |
 | `RESTIC_KEEP_HOURLY` | `0` (off) | Hourly snapshots to keep |
 | `RESTIC_KEEP_WITHIN` | `` (off) | Keep all snapshots within a duration (e.g. `2w3d`, `1y`) |
+| `RDB_HEALTHCHECK_URL` | `` (off) | Ping URL notified after each backup run (see [Health monitoring](#health-monitoring)) |
+| `RDB_MAINTENANCE_HEALTHCHECK_URL` | `` (off) | Ping URL notified after each maintenance run |
+| `RDB_STATE_FILE` | `/tmp/rdb-status` | Where the last-run state for `rdb health` is written |
+| `RDB_HEALTH_GRACE` | `1h` | How far past its scheduled time a run may be before `rdb health` reports it overdue (Go duration, e.g. `90m`) |
 
 All backend credentials recognised by restic (`AWS_*`, `B2_*`, `AZURE_*`, `GOOGLE_*`, etc.) are passed through automatically.
 
@@ -94,6 +98,42 @@ Notes on how retention is applied:
 - Backups record a stable hostname (`RDB_RESTIC_HOSTNAME`, default `rdb`) so restic's parent-snapshot selection keeps volume backups incremental across container recreations.
 
 `rdb maintenance` runs forget + prune + check once, immediately, regardless of these schedules.
+
+## Health monitoring
+
+Backup systems fail silently: a crashed scheduler or a misconfigured credential produces no output at all. rdb offers two independent signals, and success is reported as explicitly as failure — "no news" is distinguishable from "notifier is broken".
+
+### Webhook pings (healthchecks.io compatible)
+
+Set `RDB_HEALTHCHECK_URL` to a check's ping URL and rdb notifies it after every backup run — scheduled or manual:
+
+- **Success**: HTTP `GET` to the URL.
+- **Failure**: HTTP `POST` to `<url>/fail` with the error summary as the request body, so the alert shows *what* failed.
+
+This works with [healthchecks.io](https://healthchecks.io) hosted checks and with self-hosted Healthchecks instances alike — the URL is used as-is, so any scheme, host, port, and ping-path prefix works, including plain HTTP on a private network:
+
+```yaml
+environment:
+  # hosted
+  RDB_HEALTHCHECK_URL: https://hc-ping.com/<uuid>
+  # or self-hosted
+  RDB_HEALTHCHECK_URL: http://healthchecks.internal:8000/ping/<uuid>
+```
+
+On the check, set the expected period to match `RDB_CRON_SCHEDULE` (or paste the cron expression into the check's schedule) so a run that never reports is also caught. Because maintenance runs on its own schedule, it gets its own check: set `RDB_MAINTENANCE_HEALTHCHECK_URL` to a second check's URL. Using one URL for both would let a successful maintenance run mask a failing backup.
+
+Pings use a 10-second timeout and never affect the run itself — an unreachable notifier is logged and the backup proceeds.
+
+### Docker HEALTHCHECK and `rdb health`
+
+After every run, rdb writes the outcome (timestamp, ok/fail, error) to a state file (`RDB_STATE_FILE`, default `/tmp/rdb-status`). `rdb health` reads it and exits non-zero when:
+
+- the last backup or maintenance run failed, or
+- a run is overdue — more than `RDB_HEALTH_GRACE` (default `1h`) past the next time its cron schedule said it should have run, including jobs that never ran at all after scheduler start.
+
+The grace period must cover the run's own duration (state is written when a run finishes), so raise `RDB_HEALTH_GRACE` if your backups take longer than an hour.
+
+The image declares `HEALTHCHECK` using `rdb health`, so `docker ps` shows the container as `unhealthy` when backups are failing or missing, with the reason in `docker inspect --format '{{json .State.Health}}'`. No configuration is needed; it works out of the box with the default schedule.
 
 ## Database credentials
 
@@ -127,6 +167,7 @@ rdb status       Show discovered containers and their backup config
 rdb snapshots    List restic snapshots
 rdb restore      Restore a snapshot (see below)
 rdb maintenance  Run forget + prune + check immediately
+rdb health       Exit non-zero if the last run failed or is overdue (used by the image's HEALTHCHECK)
 ```
 
 ## Restoring from backup
