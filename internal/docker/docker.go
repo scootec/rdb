@@ -24,9 +24,9 @@ type ContainerInfo struct {
 	Service string
 
 	// Volume backup config
-	VolumesEnabled        bool
-	VolumesInclude        []string
-	VolumesExclude        []string
+	VolumesEnabled         bool
+	VolumesInclude         []string
+	VolumesExclude         []string
 	VolumeStopDuringBackup bool
 
 	// Database backup config
