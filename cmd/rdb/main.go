@@ -65,12 +65,12 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, `Usage: rdb <command>
 
 Commands:
-  run          Start the cron scheduler (default container entrypoint)
+  run          Start the cron scheduler: backups, retention, maintenance (default container entrypoint)
   backup       Run a backup immediately
   status       Show discovered containers and their backup configuration
   snapshots    List restic snapshots
   restore      Restore a snapshot (use 'rdb snapshots' to find IDs)
-  maintenance  Run forget + prune + check`)
+  maintenance  Run forget + prune + check immediately`)
 }
 
 func setupLogging(level string) {
@@ -87,9 +87,21 @@ func buildDeps(cfg *config.Config) (*docker.Client, *restic.Runner, *backup.Orch
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("connecting to Docker: %w", err)
 	}
-	rc := restic.New()
+	rc := restic.New(cfg.ResticHostname)
 	orch := backup.New(cfg, dc, rc)
 	return dc, rc, orch, nil
+}
+
+func retentionPolicy(cfg *config.Config) restic.RetentionPolicy {
+	return restic.RetentionPolicy{
+		Daily:   cfg.KeepDaily,
+		Weekly:  cfg.KeepWeekly,
+		Monthly: cfg.KeepMonthly,
+		Yearly:  cfg.KeepYearly,
+		Last:    cfg.KeepLast,
+		Hourly:  cfg.KeepHourly,
+		Within:  cfg.KeepWithin,
+	}
 }
 
 func runScheduler(cfg *config.Config) {
@@ -105,10 +117,38 @@ func runScheduler(cfg *config.Config) {
 		}
 	}
 
-	err = scheduler.Run(cfg.CronSchedule, func(ctx context.Context) error {
-		return orch.Run(ctx)
-	})
-	if err != nil {
+	policy := retentionPolicy(cfg)
+
+	jobs := []scheduler.Job{
+		{
+			Name:     "backup",
+			Schedule: cfg.CronSchedule,
+			Fn: func(ctx context.Context) error {
+				if err := orch.Run(ctx); err != nil {
+					return err
+				}
+				log.Info().Msg("applying retention policy")
+				return rc.Forget(policy)
+			},
+		},
+	}
+
+	if cfg.MaintenanceEnabled() {
+		jobs = append(jobs, scheduler.Job{
+			Name:     "maintenance",
+			Schedule: cfg.MaintenanceCron,
+			Fn: func(ctx context.Context) error {
+				if err := rc.Prune(); err != nil {
+					return err
+				}
+				return rc.Check()
+			},
+		})
+	} else {
+		log.Warn().Msg("scheduled maintenance disabled (RDB_MAINTENANCE_CRON is empty or 'off') — run 'rdb maintenance' manually to prune and check the repository")
+	}
+
+	if err := scheduler.Run(jobs); err != nil {
 		log.Fatal().Err(err).Msg("scheduler error")
 	}
 }
@@ -140,7 +180,7 @@ func runStatus(cfg *config.Config) {
 	}
 	defer dc.Close()
 
-	rc := restic.New()
+	rc := restic.New(cfg.ResticHostname)
 	orch := backup.New(cfg, dc, rc)
 
 	ctx := context.Background()
@@ -150,7 +190,7 @@ func runStatus(cfg *config.Config) {
 }
 
 func runSnapshots(cfg *config.Config) {
-	rc := restic.New()
+	rc := restic.New(cfg.ResticHostname)
 	snaps, err := rc.SnapshotsAll()
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to list snapshots")
@@ -230,7 +270,7 @@ func runRestore(cfg *config.Config) {
 	}
 	defer dc.Close()
 
-	rc := restic.New()
+	rc := restic.New(cfg.ResticHostname)
 	restorer := restore.New(dc, rc)
 
 	ctx := context.Background()
@@ -245,19 +285,9 @@ func runRestore(cfg *config.Config) {
 }
 
 func runMaintenance(cfg *config.Config) {
-	rc := restic.New()
+	rc := restic.New(cfg.ResticHostname)
 
-	policy := restic.RetentionPolicy{
-		Daily:   cfg.KeepDaily,
-		Weekly:  cfg.KeepWeekly,
-		Monthly: cfg.KeepMonthly,
-		Yearly:  cfg.KeepYearly,
-		Last:    cfg.KeepLast,
-		Hourly:  cfg.KeepHourly,
-		Within:  cfg.KeepWithin,
-	}
-
-	if err := rc.Forget(policy); err != nil {
+	if err := rc.Forget(retentionPolicy(cfg)); err != nil {
 		log.Fatal().Err(err).Msg("forget failed")
 	}
 	if err := rc.Prune(); err != nil {

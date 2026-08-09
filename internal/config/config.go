@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Config holds all configuration parsed from environment variables.
@@ -14,6 +15,8 @@ type Config struct {
 
 	// Scheduler
 	CronSchedule string
+	// MaintenanceCron schedules prune + check. Empty or "off" disables it.
+	MaintenanceCron string
 
 	// Logging
 	LogLevel string
@@ -22,6 +25,9 @@ type Config struct {
 	IncludeProjectName bool
 	ExcludeBindMounts  bool
 	SkipInit           bool
+	// ResticHostname is recorded as the snapshot hostname on backups so that
+	// parent-snapshot selection survives container recreations.
+	ResticHostname string
 
 	// Retention policy
 	KeepDaily   int
@@ -39,6 +45,8 @@ func Load() (*Config, error) {
 		ResticRepository:   os.Getenv("RESTIC_REPOSITORY"),
 		ResticPassword:     os.Getenv("RESTIC_PASSWORD"),
 		CronSchedule:       envOrDefault("RDB_CRON_SCHEDULE", "0 2 * * *"),
+		MaintenanceCron:    envAllowEmpty("RDB_MAINTENANCE_CRON", "0 4 * * 0"),
+		ResticHostname:     envOrDefault("RDB_RESTIC_HOSTNAME", "rdb"),
 		LogLevel:           envOrDefault("RDB_LOG_LEVEL", "info"),
 		IncludeProjectName: envBool("RDB_INCLUDE_PROJECT_NAME", false),
 		ExcludeBindMounts:  envBool("RDB_EXCLUDE_BIND_MOUNTS", false),
@@ -60,6 +68,21 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// MaintenanceEnabled reports whether the scheduled prune + check job is enabled.
+func (c *Config) MaintenanceEnabled() bool {
+	return c.MaintenanceCron != "" && !strings.EqualFold(c.MaintenanceCron, "off")
+}
+
+// envAllowEmpty returns the default only when key is unset. Unlike
+// envOrDefault, a variable explicitly set to the empty string is preserved,
+// so operators can use an empty value to disable a feature.
+func envAllowEmpty(key, def string) string {
+	if v, ok := os.LookupEnv(key); ok {
+		return v
+	}
+	return def
 }
 
 func envOrDefault(key, def string) string {
