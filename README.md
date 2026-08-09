@@ -59,6 +59,8 @@ rdb initialises the repository on first run, backs up on the configured schedule
 | `RESTIC_PASSWORD` | **required** | Repository encryption password |
 | `RDB_CRON_SCHEDULE` | `0 2 * * *` | Backup schedule (5-field cron) |
 | `RDB_MAINTENANCE_CRON` | `0 4 * * 0` | Prune + check schedule (5-field cron). Empty or `off` disables scheduled maintenance |
+| `RDB_BACKUP_TIMEOUT` | `2h` | Maximum duration of a single scheduled run (Go duration). A run that exceeds it is aborted so a hung dump cannot block future backups. `0` disables the limit |
+| `RDB_SHUTDOWN_TIMEOUT` | `5m` | On SIGTERM/SIGINT, how long an in-flight run may keep going before it is aborted (see [Scheduler lifecycle](#scheduler-lifecycle)) |
 | `RDB_RESTIC_HOSTNAME` | `rdb` | Stable hostname recorded on snapshots (see [Retention and maintenance](#retention-and-maintenance)) |
 | `RDB_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `RDB_EXCLUDE_BIND_MOUNTS` | `false` | Skip host bind mounts during volume backup |
@@ -98,6 +100,21 @@ Notes on how retention is applied:
 - Backups record a stable hostname (`RDB_RESTIC_HOSTNAME`, default `rdb`) so restic's parent-snapshot selection keeps volume backups incremental across container recreations.
 
 `rdb maintenance` runs forget + prune + check once, immediately, regardless of these schedules.
+
+## Scheduler lifecycle
+
+Three guards keep the scheduler predictable under long or hung runs:
+
+- **No overlap.** A run that outlasts its schedule interval (large volume, slow remote, restic waiting on a lock) never overlaps the next tick — the tick is skipped and logged instead. This applies both to a job overlapping itself and to backup vs. maintenance.
+- **Run timeout.** Each scheduled run is bounded by `RDB_BACKUP_TIMEOUT` (default `2h`). When it expires the run's context is cancelled: hung database dumps are unblocked by closing the Docker connection, restic receives SIGINT (so it releases its repository locks) and is killed if it ignores it. A snapshot committed from a dump that was cut off mid-stream is deleted, or tagged `partial` if deletion fails, exactly as for any other failed dump. Without a timeout, a dump hung on a locked table plus overlap protection would silently stop all future backups.
+- **Graceful shutdown.** On SIGTERM/SIGINT (e.g. `docker compose down` or an image upgrade) the scheduler stops firing new ticks and waits up to `RDB_SHUTDOWN_TIMEOUT` (default `5m`) for an in-flight run to finish, so restic is not killed mid-backup. If the run is still going after the grace period — or a second signal arrives — it is aborted as above and rdb exits. Give the container a `stop_grace_period` slightly larger than `RDB_SHUTDOWN_TIMEOUT`, otherwise Docker sends SIGKILL first:
+
+```yaml
+services:
+  rdb:
+    image: ghcr.io/scootec/rdb:latest
+    stop_grace_period: 5m30s
+```
 
 ## Health monitoring
 
