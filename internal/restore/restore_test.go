@@ -94,14 +94,14 @@ func TestBuildImportCmd(t *testing.T) {
 			name:         "postgres defaults to postgres user",
 			env:          map[string]string{},
 			dbType:       "postgres",
-			wantCmd:      []string{"psql", "-U", "postgres"},
+			wantCmd:      []string{"psql", "--set", "ON_ERROR_STOP=on", "-U", "postgres"},
 			wantExtraEnv: nil,
 		},
 		{
 			name:         "postgres with user and password",
 			env:          map[string]string{"POSTGRES_USER": "app", "POSTGRES_PASSWORD": "s3cret"},
 			dbType:       "postgres",
-			wantCmd:      []string{"psql", "-U", "app"},
+			wantCmd:      []string{"psql", "--set", "ON_ERROR_STOP=on", "-U", "app"},
 			wantExtraEnv: []string{"PGPASSWORD=s3cret"},
 		},
 		{
