@@ -97,8 +97,11 @@ func DumpCmd(env map[string]string, dbType string) (cmd []string, extraEnv []str
 			// --all-databases it emits DROP DATABASE for the mysql system
 			// schema, which MySQL 8.0+ refuses to drop, aborting the
 			// restore.
+			//
+			// No --force: it would continue past SQL errors and produce a
+			// silently incomplete dump that exits 0. A backup must fail
+			// loudly instead of archiving whatever subset survived.
 			"--add-drop-table",
-			"--force",
 		}
 		return cmd, mysqlExtraEnv(c), nil
 
@@ -111,10 +114,10 @@ func DumpCmd(env map[string]string, dbType string) (cmd []string, extraEnv []str
 			"--single-transaction",
 			"--compact",
 			// See the mysql case: --add-drop-table must follow --compact,
-			// and --add-drop-database would drop the mysql system schema
-			// (the grant tables) mid-restore.
+			// --add-drop-database would drop the mysql system schema
+			// (the grant tables) mid-restore, and --force would hide dump
+			// errors behind an exit code of 0.
 			"--add-drop-table",
-			"--force",
 		}
 		return cmd, mysqlExtraEnv(c), nil
 
