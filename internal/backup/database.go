@@ -7,13 +7,14 @@ import (
 	"path"
 
 	"github.com/rs/zerolog/log"
+	"github.com/scootec/rdb/internal/dbcmd"
 	"github.com/scootec/rdb/internal/docker"
 	"github.com/scootec/rdb/internal/restic"
 )
 
 // dumpDatabase runs a database dump inside the container and pipes it to restic.
 func dumpDatabase(ctx context.Context, dc *docker.Client, rc *restic.Runner, ctr docker.ContainerInfo, dbType string) error {
-	cmd, extraEnv, err := buildDumpCmd(ctr, dbType)
+	cmd, extraEnv, err := dbcmd.DumpCmd(ctr.Env, dbType)
 	if err != nil {
 		return err
 	}
@@ -67,80 +68,6 @@ func dumpDatabase(ctx context.Context, dc *docker.Client, rc *restic.Runner, ctr
 		Str("db", dbType).
 		Msg("database dump complete")
 	return nil
-}
-
-// buildDumpCmd returns the dump command and extra environment variables for
-// the given database type, selecting credentials from the container's
-// environment variables.
-func buildDumpCmd(ctr docker.ContainerInfo, dbType string) (cmd []string, extraEnv []string, err error) {
-	var user, password string
-
-	switch dbType {
-	case "postgres":
-		user = ctr.Env["POSTGRES_USER"]
-		if user == "" {
-			user = "postgres"
-		}
-		password = ctr.Env["POSTGRES_PASSWORD"]
-		cmd = []string{"pg_dumpall", "-U", user}
-		if password != "" {
-			extraEnv = []string{"PGPASSWORD=" + password}
-		}
-
-	case "mysql":
-		password = ctr.Env["MYSQL_ROOT_PASSWORD"]
-		user = "root"
-		if password == "" {
-			user = ctr.Env["MYSQL_USER"]
-			password = ctr.Env["MYSQL_PASSWORD"]
-		}
-		cmd = []string{
-			"mysqldump",
-			"--user=" + user,
-			"--all-databases",
-			"--single-transaction",
-			"--compact",
-			"--force",
-		}
-		if password != "" {
-			extraEnv = []string{"MYSQL_PWD=" + password}
-		}
-
-	case "mariadb":
-		// MariaDB images typically configure root with unix socket auth,
-		// so password-based root login fails. When a root password env var
-		// is present we know MariaDB is installed and can use socket auth
-		// by exec'ing as root without a password. Only fall back to
-		// password auth for non-root users.
-		if ctr.Env["MARIADB_ROOT_PASSWORD"] != "" || ctr.Env["MYSQL_ROOT_PASSWORD"] != "" {
-			user = "root"
-		} else {
-			user = ctr.Env["MARIADB_USER"]
-			if user == "" {
-				user = ctr.Env["MYSQL_USER"]
-			}
-			password = ctr.Env["MARIADB_PASSWORD"]
-			if password == "" {
-				password = ctr.Env["MYSQL_PASSWORD"]
-			}
-		}
-		cmd = []string{
-			"mariadb-dump",
-			"--user=" + user,
-			"--all-databases",
-			"--single-transaction",
-			"--compact",
-			"--force",
-		}
-		if password != "" {
-			extraEnv = []string{"MYSQL_PWD=" + password}
-		}
-
-	default:
-		return nil, nil, fmt.Errorf("unknown database type: %s", dbType)
-	}
-
-	return cmd, extraEnv, nil
 }
 
 func buildDBFilename(ctr docker.ContainerInfo, dbType string) string {

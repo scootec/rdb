@@ -7,7 +7,7 @@ import (
 	"os"
 
 	"github.com/rs/zerolog/log"
-	"github.com/scootec/rdb/internal/docker"
+	"github.com/scootec/rdb/internal/dbcmd"
 	"github.com/scootec/rdb/internal/restic"
 )
 
@@ -39,7 +39,10 @@ func (r *Restorer) restoreDatabase(ctx context.Context, snap restic.Snapshot, db
 		return fmt.Errorf("finding target container: %w (use --output to extract the dump to a file instead)", err)
 	}
 
-	cmd, extraEnv := buildImportCmd(ctr, dbType)
+	cmd, extraEnv, err := dbcmd.ImportCmd(ctr.Env, dbType)
+	if err != nil {
+		return fmt.Errorf("building import command for %s: %w", ctr.Name, err)
+	}
 
 	log.Warn().
 		Str("container", ctr.Name).
@@ -55,52 +58,6 @@ func (r *Restorer) restoreDatabase(ctx context.Context, snap restic.Snapshot, db
 		Str("db", dbType).
 		Msg("database restore complete")
 	return nil
-}
-
-// buildImportCmd returns the command and environment variables for importing
-// a SQL dump into a container, matching the credential logic in backup/database.go.
-func buildImportCmd(ctr *docker.ContainerInfo, dbType string) (cmd []string, extraEnv []string) {
-	switch dbType {
-	case "postgres":
-		user := ctr.Env["POSTGRES_USER"]
-		if user == "" {
-			user = "postgres"
-		}
-		password := ctr.Env["POSTGRES_PASSWORD"]
-		// ON_ERROR_STOP makes psql exit non-zero on the first SQL error
-		// instead of logging and continuing with exit 0. pg_dumpall output
-		// cannot run inside --single-transaction, so this is the only
-		// reliable failure signal for restores.
-		cmd = []string{"psql", "--set", "ON_ERROR_STOP=on", "-U", user}
-		if password != "" {
-			extraEnv = []string{"PGPASSWORD=" + password}
-		}
-
-	case "mysql":
-		password := ctr.Env["MYSQL_ROOT_PASSWORD"]
-		user := "root"
-		if password == "" {
-			user = ctr.Env["MYSQL_USER"]
-			password = ctr.Env["MYSQL_PASSWORD"]
-		}
-		cmd = []string{"mysql", "--user=" + user}
-		if password != "" {
-			extraEnv = []string{"MYSQL_PWD=" + password}
-		}
-
-	case "mariadb":
-		password := ctr.Env["MARIADB_ROOT_PASSWORD"]
-		user := "root"
-		if password == "" {
-			user = ctr.Env["MARIADB_USER"]
-			password = ctr.Env["MARIADB_PASSWORD"]
-		}
-		cmd = []string{"mariadb", "--user=" + user}
-		if password != "" {
-			extraEnv = []string{"MYSQL_PWD=" + password}
-		}
-	}
-	return cmd, extraEnv
 }
 
 // dumpToFile writes the reader contents to the given file path.
