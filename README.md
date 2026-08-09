@@ -121,7 +121,7 @@ services:
       - /home/user/containers:/home/user/containers           # read-write for restore
 ```
 
-Volume restore writes files back to their original absolute paths inside the rdb container. If the host path isn't mounted (or is mounted read-only), the restore will fail.
+Volume restore writes files back to their original absolute paths inside the rdb container, restricted to the paths recorded in the snapshot (`restic restore --include`), and verifies the restored files against the repository (`--verify`). If the host path isn't mounted (or is mounted read-only), the restore will fail.
 
 ### Listing snapshots
 
@@ -156,6 +156,20 @@ def456    2026-03-28 02:00  volume     myapp      app        /var/lib/docker/vol
    ```
 
 rdb automatically detects the snapshot type (volume, PostgreSQL, MySQL, MariaDB) from tags and locates the target container by its Compose project and service labels.
+
+### Volume restore safety
+
+Before restoring a volume, rdb checks whether the container that owns the volume is still running (located via the snapshot's project/service tags). Restoring under a running application or database corrupts data, so a restore against a running container is refused unless you pass one of:
+
+```sh
+# Stop the container, restore, then restart it
+docker exec rdb rdb restore <volume-snapshot-id> --stop
+
+# Restore anyway while the container keeps running (dangerous)
+docker exec rdb rdb restore <volume-snapshot-id> --force
+```
+
+If the owning container simply isn't running (the normal disaster-recovery case), the restore proceeds without any flags. `--force` also bypasses failures to determine the container's state (for example when multiple containers match the snapshot's tags).
 
 ### Dump to file
 

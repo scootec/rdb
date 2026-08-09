@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -179,8 +180,13 @@ func (c *Client) StartContainer(ctx context.Context, containerID string) error {
 	return c.cli.ContainerStart(ctx, containerID, container.StartOptions{})
 }
 
+// ErrContainerNotFound is returned by FindContainer when no running container
+// matches the given project and service. Callers can use errors.Is to
+// distinguish "not running" from other lookup failures.
+var ErrContainerNotFound = errors.New("no running container found")
+
 // FindContainer locates a running container by its Compose project and service labels.
-// Returns an error if zero or multiple containers match.
+// Returns ErrContainerNotFound if nothing matches, or an error if multiple containers match.
 func (c *Client) FindContainer(ctx context.Context, project, service string) (*ContainerInfo, error) {
 	containers, err := c.DiscoverContainers(ctx)
 	if err != nil {
@@ -196,7 +202,7 @@ func (c *Client) FindContainer(ctx context.Context, project, service string) (*C
 
 	switch len(matches) {
 	case 0:
-		return nil, fmt.Errorf("no running container found for project=%q service=%q", project, service)
+		return nil, fmt.Errorf("%w for project=%q service=%q", ErrContainerNotFound, project, service)
 	case 1:
 		return &matches[0], nil
 	default:

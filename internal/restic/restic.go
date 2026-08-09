@@ -133,9 +133,18 @@ func (r *Runner) SnapshotsAll() ([]Snapshot, error) {
 	return snaps, nil
 }
 
-// Restore runs "restic restore <snapshotID> --target <target>".
-func (r *Runner) Restore(snapshotID, target string) error {
-	return r.run(nil, "restore", snapshotID, "--target", target)
+// Restore runs "restic restore <snapshotID> --target <target> --verify",
+// optionally scoped to the given include paths so only those subtrees are written.
+func (r *Runner) Restore(snapshotID, target string, includes []string) error {
+	return r.run(nil, restoreArgs(snapshotID, target, includes)...)
+}
+
+func restoreArgs(snapshotID, target string, includes []string) []string {
+	args := []string{"restore", snapshotID, "--target", target, "--verify"}
+	for _, inc := range includes {
+		args = append(args, "--include", inc)
+	}
+	return args
 }
 
 // Dump runs "restic dump <snapshotID> <path>" and returns stdout as a reader.
