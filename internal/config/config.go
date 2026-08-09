@@ -18,6 +18,13 @@ type Config struct {
 	CronSchedule string
 	// MaintenanceCron schedules prune + check. Empty or "off" disables it.
 	MaintenanceCron string
+	// BackupTimeout bounds a single scheduled run (backup or maintenance):
+	// when it expires the run's context is cancelled, aborting hung dumps
+	// and restic invocations. Zero disables the timeout.
+	BackupTimeout time.Duration
+	// ShutdownTimeout is how long, after SIGTERM/SIGINT, an in-flight run may
+	// keep going before it is aborted. Zero aborts in-flight runs immediately.
+	ShutdownTimeout time.Duration
 
 	// Logging
 	LogLevel string
@@ -59,6 +66,8 @@ func Load() (*Config, error) {
 		ResticPassword:     os.Getenv("RESTIC_PASSWORD"),
 		CronSchedule:       envOrDefault("RDB_CRON_SCHEDULE", "0 2 * * *"),
 		MaintenanceCron:    envAllowEmpty("RDB_MAINTENANCE_CRON", "0 4 * * 0"),
+		BackupTimeout:      envDuration("RDB_BACKUP_TIMEOUT", 2*time.Hour),
+		ShutdownTimeout:    envDuration("RDB_SHUTDOWN_TIMEOUT", 5*time.Minute),
 		ResticHostname:     envOrDefault("RDB_RESTIC_HOSTNAME", "rdb"),
 		LogLevel:           envOrDefault("RDB_LOG_LEVEL", "info"),
 		IncludeProjectName: envBool("RDB_INCLUDE_PROJECT_NAME", false),

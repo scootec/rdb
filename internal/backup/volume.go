@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/rs/zerolog/log"
@@ -26,8 +27,13 @@ func backupVolumes(ctx context.Context, dc *docker.Client, rc *restic.Runner, ct
 			return fmt.Errorf("stopping container %s: %w", ctr.Name, err)
 		}
 		defer func() {
+			// The container must be restarted even when the backup was
+			// cancelled or timed out, so the restart runs on a context
+			// detached from the run's cancellation.
+			restartCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+			defer cancel()
 			log.Info().Str("container", ctr.Name).Msg("restarting container after volume backup")
-			if startErr := dc.StartContainer(ctx, ctr.ID); startErr != nil {
+			if startErr := dc.StartContainer(restartCtx, ctr.ID); startErr != nil {
 				log.Error().Err(startErr).Str("container", ctr.Name).Msg("failed to restart container")
 			}
 		}()
@@ -46,7 +52,7 @@ func backupVolumes(ctx context.Context, dc *docker.Client, rc *restic.Runner, ct
 			Str("path", hostPath).
 			Msg("backing up volume")
 
-		if err := rc.BackupDir(hostPath, tags); err != nil {
+		if err := rc.BackupDir(ctx, hostPath, tags); err != nil {
 			return fmt.Errorf("backup volume %s on %s: %w", mount.Destination, ctr.Name, err)
 		}
 	}

@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
-
+	"os/signal"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -116,7 +117,7 @@ func runScheduler(cfg *config.Config) {
 	defer dc.Close()
 
 	if !cfg.SkipInit {
-		if err := rc.InitRepo(); err != nil {
+		if err := rc.InitRepo(context.Background()); err != nil {
 			log.Fatal().Err(err).Msg("failed to initialise restic repository")
 		}
 	}
@@ -127,12 +128,13 @@ func runScheduler(cfg *config.Config) {
 		{
 			Name:     "backup",
 			Schedule: cfg.CronSchedule,
+			Timeout:  cfg.BackupTimeout,
 			Fn: reported(cfg.StateFile, "backup", health.NewPinger(cfg.HealthcheckURL), func(ctx context.Context) error {
 				if err := orch.Run(ctx); err != nil {
 					return err
 				}
 				log.Info().Msg("applying retention policy")
-				return rc.Forget(policy)
+				return rc.Forget(ctx, policy)
 			}),
 		},
 	}
@@ -142,11 +144,12 @@ func runScheduler(cfg *config.Config) {
 		jobs = append(jobs, scheduler.Job{
 			Name:     "maintenance",
 			Schedule: cfg.MaintenanceCron,
+			Timeout:  cfg.BackupTimeout,
 			Fn: reported(cfg.StateFile, "maintenance", health.NewPinger(cfg.MaintenanceHealthcheckURL), func(ctx context.Context) error {
-				if err := rc.Prune(); err != nil {
+				if err := rc.Prune(ctx); err != nil {
 					return err
 				}
-				return rc.Check()
+				return rc.Check(ctx)
 			}),
 		})
 		scheduled = append(scheduled, "maintenance")
@@ -158,7 +161,7 @@ func runScheduler(cfg *config.Config) {
 		log.Warn().Err(err).Str("path", cfg.StateFile).Msg("failed to write health state file")
 	}
 
-	if err := scheduler.Run(jobs); err != nil {
+	if err := scheduler.Run(jobs, scheduler.Options{ShutdownGrace: cfg.ShutdownTimeout}); err != nil {
 		log.Fatal().Err(err).Msg("scheduler error")
 	}
 }
@@ -189,13 +192,23 @@ func runBackup(cfg *config.Config) {
 	}
 	defer dc.Close()
 
+	// Ctrl-C / SIGTERM cancels the run so hung dumps unblock and the
+	// partial-snapshot cleanup still gets a chance to run.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	if cfg.BackupTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cfg.BackupTimeout)
+		defer cancel()
+	}
+
 	if !cfg.SkipInit {
-		if err := rc.InitRepo(); err != nil {
+		if err := rc.InitRepo(ctx); err != nil {
 			log.Fatal().Err(err).Msg("failed to initialise restic repository")
 		}
 	}
 
-	runErr := orch.Run(context.Background())
+	runErr := orch.Run(ctx)
 	report(cfg.StateFile, "backup", health.NewPinger(cfg.HealthcheckURL), runErr)
 	if runErr != nil {
 		log.Fatal().Err(runErr).Msg("backup failed")
@@ -221,7 +234,7 @@ func runStatus(cfg *config.Config) {
 
 func runSnapshots(cfg *config.Config) {
 	rc := restic.New(cfg.ResticHostname)
-	snaps, err := rc.SnapshotsAll()
+	snaps, err := rc.SnapshotsAll(context.Background())
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to list snapshots")
 	}
@@ -317,7 +330,10 @@ func runRestore(cfg *config.Config) {
 func runMaintenance(cfg *config.Config) {
 	rc := restic.New(cfg.ResticHostname)
 
-	runErr := maintain(rc, cfg)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	runErr := maintain(ctx, rc, cfg)
 	report(cfg.StateFile, "maintenance", health.NewPinger(cfg.MaintenanceHealthcheckURL), runErr)
 	if runErr != nil {
 		log.Fatal().Err(runErr).Msg("maintenance failed")
@@ -325,14 +341,14 @@ func runMaintenance(cfg *config.Config) {
 	log.Info().Msg("maintenance complete")
 }
 
-func maintain(rc *restic.Runner, cfg *config.Config) error {
-	if err := rc.Forget(retentionPolicy(cfg)); err != nil {
+func maintain(ctx context.Context, rc *restic.Runner, cfg *config.Config) error {
+	if err := rc.Forget(ctx, retentionPolicy(cfg)); err != nil {
 		return fmt.Errorf("forget failed: %w", err)
 	}
-	if err := rc.Prune(); err != nil {
+	if err := rc.Prune(ctx); err != nil {
 		return fmt.Errorf("prune failed: %w", err)
 	}
-	if err := rc.Check(); err != nil {
+	if err := rc.Check(ctx); err != nil {
 		return fmt.Errorf("check failed: %w", err)
 	}
 	return nil

@@ -131,6 +131,7 @@ func TestLoad(t *testing.T) {
 			"RESTIC_KEEP_WITHIN",
 			"RDB_HEALTHCHECK_URL", "RDB_MAINTENANCE_HEALTHCHECK_URL",
 			"RDB_STATE_FILE", "RDB_HEALTH_GRACE",
+			"RDB_BACKUP_TIMEOUT", "RDB_SHUTDOWN_TIMEOUT",
 		} {
 			t.Setenv(key, "")
 			os.Unsetenv(key)
@@ -199,6 +200,12 @@ func TestLoad(t *testing.T) {
 		if cfg.HealthGrace != time.Hour {
 			t.Errorf("HealthGrace = %v, want %v", cfg.HealthGrace, time.Hour)
 		}
+		if cfg.BackupTimeout != 2*time.Hour {
+			t.Errorf("BackupTimeout = %v, want %v", cfg.BackupTimeout, 2*time.Hour)
+		}
+		if cfg.ShutdownTimeout != 5*time.Minute {
+			t.Errorf("ShutdownTimeout = %v, want %v", cfg.ShutdownTimeout, 5*time.Minute)
+		}
 	})
 
 	t.Run("explicit values override defaults", func(t *testing.T) {
@@ -219,6 +226,8 @@ func TestLoad(t *testing.T) {
 		t.Setenv("RDB_MAINTENANCE_HEALTHCHECK_URL", "https://hc.example.com/ping/uuid-2")
 		t.Setenv("RDB_STATE_FILE", "/var/lib/rdb/status")
 		t.Setenv("RDB_HEALTH_GRACE", "2h")
+		t.Setenv("RDB_BACKUP_TIMEOUT", "45m")
+		t.Setenv("RDB_SHUTDOWN_TIMEOUT", "90s")
 
 		cfg, err := Load()
 		if err != nil {
@@ -258,6 +267,12 @@ func TestLoad(t *testing.T) {
 		}
 		if cfg.HealthGrace != 2*time.Hour {
 			t.Errorf("HealthGrace = %v, want 2h", cfg.HealthGrace)
+		}
+		if cfg.BackupTimeout != 45*time.Minute {
+			t.Errorf("BackupTimeout = %v, want 45m", cfg.BackupTimeout)
+		}
+		if cfg.ShutdownTimeout != 90*time.Second {
+			t.Errorf("ShutdownTimeout = %v, want 90s", cfg.ShutdownTimeout)
 		}
 	})
 

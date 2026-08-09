@@ -1,8 +1,10 @@
 package restic
 
 import (
+	"context"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestParseBackupSummary(t *testing.T) {
@@ -230,5 +232,49 @@ func TestRestoreArgs(t *testing.T) {
 				t.Errorf("restoreArgs(%q, %q, %v) = %v, want %v", tt.snapshotID, tt.target, tt.includes, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRunCancellationAbortsCommand(t *testing.T) {
+	orig := resticBinary
+	resticBinary = "sleep"
+	defer func() { resticBinary = orig }()
+
+	r := New("")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- r.run(ctx, nil, "60") }()
+
+	// Give the command a moment to start before cancelling.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("run() = nil, want error after cancellation")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run() still blocked 5s after cancellation — context does not abort the command")
+	}
+}
+
+func TestRunCapturePreexpiredContextFails(t *testing.T) {
+	orig := resticBinary
+	resticBinary = "sleep"
+	defer func() { resticBinary = orig }()
+
+	r := New("")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	if _, err := r.runCapture(ctx, nil, "60"); err == nil {
+		t.Fatal("runCapture() = nil, want error for already-cancelled context")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("runCapture() took %v with a cancelled context, want fast failure", elapsed)
 	}
 }

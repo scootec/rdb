@@ -144,6 +144,7 @@ func (r *ExecDumpReader) ExecID() string {
 // ExecDump runs a command inside the target container and returns a reader for
 // its stdout. Stderr is captured and available via the Stderr method after the
 // reader is closed. The caller is responsible for closing the returned reader.
+// Cancelling ctx closes the underlying connection and unblocks pending reads.
 func (c *Client) ExecDump(ctx context.Context, containerID string, cmd []string, extraEnv []string) (*ExecDumpReader, int, error) {
 	execConfig := container.ExecOptions{
 		Cmd:          cmd,
@@ -166,6 +167,7 @@ func (c *Client) ExecDump(ctx context.Context, containerID string, cmd []string,
 		cli:    c.cli,
 		execID: execID.ID,
 		conn:   resp,
+		ctx:    ctx,
 	}}, 0, nil
 }
 

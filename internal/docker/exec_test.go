@@ -1,8 +1,16 @@
 package docker
 
 import (
+	"bufio"
+	"context"
+	"errors"
+	"io"
+	"net"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/docker/docker/api/types"
 )
 
 func TestBoundedBuffer(t *testing.T) {
@@ -50,5 +58,59 @@ func TestBoundedBufferLen(t *testing.T) {
 	}
 	if !strings.HasPrefix(b.String(), "abcd") {
 		t.Errorf("String() = %q, want prefix %q", b.String(), "abcd")
+	}
+}
+
+// blockedExecReader builds an execReader over a net.Pipe whose remote end
+// never sends data, so reads block until something closes the connection.
+func blockedExecReader(ctx context.Context) (*execReader, net.Conn) {
+	local, remote := net.Pipe()
+	r := &execReader{
+		ctx:  ctx,
+		conn: types.HijackedResponse{Conn: local, Reader: bufio.NewReader(local)},
+	}
+	return r, remote
+}
+
+func TestExecReaderUnblocksOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	r, remote := blockedExecReader(ctx)
+	defer remote.Close()
+	defer r.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := io.ReadAll(r)
+		errCh <- err
+	}()
+
+	// Let the reader block on the connection before cancelling.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Read error = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Read still blocked 5s after context cancellation")
+	}
+}
+
+func TestExecReaderCloseWithoutCancellation(t *testing.T) {
+	r, remote := blockedExecReader(context.Background())
+	defer remote.Close()
+
+	done := make(chan struct{})
+	go func() {
+		r.Close()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close blocked on a live context — watcher not stopped")
 	}
 }

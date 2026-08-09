@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"time"
 
 	"github.com/rs/zerolog/log"
 	"github.com/scootec/rdb/internal/dbcmd"
@@ -15,9 +16,9 @@ import (
 // resticBackend is the subset of restic.Runner used by database dumps,
 // extracted so the failure path can be unit-tested with a fake.
 type resticBackend interface {
-	BackupFromStdin(filename string, reader io.Reader, tags []string) (snapshotID string, err error)
-	ForgetSnapshot(snapshotID string) error
-	TagSnapshot(snapshotID string, tags []string) error
+	BackupFromStdin(ctx context.Context, filename string, reader io.Reader, tags []string) (snapshotID string, err error)
+	ForgetSnapshot(ctx context.Context, snapshotID string) error
+	TagSnapshot(ctx context.Context, snapshotID string, tags []string) error
 }
 
 // dumpStream is the subset of docker.ExecDumpReader that streamDumpToRestic
@@ -59,13 +60,13 @@ func streamDumpToRestic(ctx context.Context, reader dumpStream, execExitCode fun
 	stdinFilename := buildDBFilename(ctr, dbType)
 	tags := buildTags(ctr, dbType)
 
-	snapshotID, err := rc.BackupFromStdin(stdinFilename, reader, tags)
+	snapshotID, err := rc.BackupFromStdin(ctx, stdinFilename, reader, tags)
 	if err != nil {
 		if stderr := reader.Stderr(); stderr != "" {
 			log.Error().Str("container", ctr.Name).Str("db", dbType).Str("stderr", stderr).Msg("database dump stderr")
 		}
 		if snapshotID != "" {
-			discardPartialSnapshot(rc, snapshotID, ctr.Name, dbType)
+			discardPartialSnapshot(ctx, rc, snapshotID, ctr.Name, dbType)
 		}
 		return fmt.Errorf("restic backup stdin (%s/%s): %w", ctr.Name, dbType, err)
 	}
@@ -79,7 +80,7 @@ func streamDumpToRestic(ctx context.Context, reader dumpStream, execExitCode fun
 			log.Warn().Str("container", ctr.Name).Str("db", dbType).
 				Msg("dump failed but its snapshot could not be identified; a truncated snapshot may remain in the repository")
 		} else {
-			discardPartialSnapshot(rc, snapshotID, ctr.Name, dbType)
+			discardPartialSnapshot(ctx, rc, snapshotID, ctr.Name, dbType)
 		}
 		return fmt.Errorf("dump command exited with code %d (%s/%s): %s", exitCode, ctr.Name, dbType, reader.Stderr())
 	}
@@ -91,11 +92,19 @@ func streamDumpToRestic(ctx context.Context, reader dumpStream, execExitCode fun
 	return nil
 }
 
+// discardCleanupTimeout bounds the detached cleanup of a failed dump's snapshot.
+const discardCleanupTimeout = 5 * time.Minute
+
 // discardPartialSnapshot removes the snapshot created from a failed dump. If
 // deletion fails it falls back to tagging the snapshot partial, which
-// excludes it from `rdb snapshots` and restore.
-func discardPartialSnapshot(rc resticBackend, snapshotID, ctrName, dbType string) {
-	forgetErr := rc.ForgetSnapshot(snapshotID)
+// excludes it from `rdb snapshots` and restore. Cleanup must still happen
+// when the dump failed because the run was cancelled or timed out, so it
+// runs on a context detached from the run's cancellation.
+func discardPartialSnapshot(ctx context.Context, rc resticBackend, snapshotID, ctrName, dbType string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discardCleanupTimeout)
+	defer cancel()
+
+	forgetErr := rc.ForgetSnapshot(ctx, snapshotID)
 	if forgetErr == nil {
 		log.Info().Str("container", ctrName).Str("db", dbType).Str("snapshot", snapshotID).
 			Msg("deleted snapshot of failed dump")
@@ -103,7 +112,7 @@ func discardPartialSnapshot(rc resticBackend, snapshotID, ctrName, dbType string
 	}
 	log.Warn().Err(forgetErr).Str("container", ctrName).Str("db", dbType).Str("snapshot", snapshotID).
 		Msg("could not delete snapshot of failed dump, tagging it partial")
-	if err := rc.TagSnapshot(snapshotID, []string{restic.TagPartial}); err != nil {
+	if err := rc.TagSnapshot(ctx, snapshotID, []string{restic.TagPartial}); err != nil {
 		log.Error().Err(err).Str("container", ctrName).Str("db", dbType).Str("snapshot", snapshotID).
 			Msg("could not tag snapshot of failed dump; it may appear as a valid backup")
 	}
