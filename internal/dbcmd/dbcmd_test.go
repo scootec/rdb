@@ -32,21 +32,21 @@ func TestDumpCmd(t *testing.T) {
 			name:         "mysql uses root with MYSQL_ROOT_PASSWORD",
 			env:          map[string]string{"MYSQL_ROOT_PASSWORD": "rootpw"},
 			dbType:       "mysql",
-			wantCmd:      []string{"mysqldump", "--user=root", "--all-databases", "--single-transaction", "--compact", "--add-drop-table", "--force"},
+			wantCmd:      []string{"mysqldump", "--user=root", "--all-databases", "--single-transaction", "--compact", "--add-drop-table"},
 			wantExtraEnv: []string{"MYSQL_PWD=rootpw"},
 		},
 		{
 			name:         "mysql falls back to MYSQL_USER when no root password",
 			env:          map[string]string{"MYSQL_USER": "app", "MYSQL_PASSWORD": "apppw"},
 			dbType:       "mysql",
-			wantCmd:      []string{"mysqldump", "--user=app", "--all-databases", "--single-transaction", "--compact", "--add-drop-table", "--force"},
+			wantCmd:      []string{"mysqldump", "--user=app", "--all-databases", "--single-transaction", "--compact", "--add-drop-table"},
 			wantExtraEnv: []string{"MYSQL_PWD=apppw"},
 		},
 		{
 			name:         "mysql with no credentials at all uses empty user, no password",
 			env:          map[string]string{},
 			dbType:       "mysql",
-			wantCmd:      []string{"mysqldump", "--user=", "--all-databases", "--single-transaction", "--compact", "--add-drop-table", "--force"},
+			wantCmd:      []string{"mysqldump", "--user=", "--all-databases", "--single-transaction", "--compact", "--add-drop-table"},
 			wantExtraEnv: nil,
 		},
 		{
@@ -54,35 +54,35 @@ func TestDumpCmd(t *testing.T) {
 			name:         "mariadb with MARIADB_ROOT_PASSWORD uses root via socket auth",
 			env:          map[string]string{"MARIADB_ROOT_PASSWORD": "rootpw"},
 			dbType:       "mariadb",
-			wantCmd:      []string{"mariadb-dump", "--user=root", "--all-databases", "--single-transaction", "--compact", "--add-drop-table", "--force"},
+			wantCmd:      []string{"mariadb-dump", "--user=root", "--all-databases", "--single-transaction", "--compact", "--add-drop-table"},
 			wantExtraEnv: nil,
 		},
 		{
 			name:         "mariadb with MYSQL_ROOT_PASSWORD also uses root via socket auth",
 			env:          map[string]string{"MYSQL_ROOT_PASSWORD": "rootpw"},
 			dbType:       "mariadb",
-			wantCmd:      []string{"mariadb-dump", "--user=root", "--all-databases", "--single-transaction", "--compact", "--add-drop-table", "--force"},
+			wantCmd:      []string{"mariadb-dump", "--user=root", "--all-databases", "--single-transaction", "--compact", "--add-drop-table"},
 			wantExtraEnv: nil,
 		},
 		{
 			name:         "mariadb falls back to MARIADB_USER with password auth",
 			env:          map[string]string{"MARIADB_USER": "app", "MARIADB_PASSWORD": "apppw"},
 			dbType:       "mariadb",
-			wantCmd:      []string{"mariadb-dump", "--user=app", "--all-databases", "--single-transaction", "--compact", "--add-drop-table", "--force"},
+			wantCmd:      []string{"mariadb-dump", "--user=app", "--all-databases", "--single-transaction", "--compact", "--add-drop-table"},
 			wantExtraEnv: []string{"MYSQL_PWD=apppw"},
 		},
 		{
 			name:         "mariadb falls back to MYSQL_USER and MYSQL_PASSWORD",
 			env:          map[string]string{"MYSQL_USER": "app", "MYSQL_PASSWORD": "apppw"},
 			dbType:       "mariadb",
-			wantCmd:      []string{"mariadb-dump", "--user=app", "--all-databases", "--single-transaction", "--compact", "--add-drop-table", "--force"},
+			wantCmd:      []string{"mariadb-dump", "--user=app", "--all-databases", "--single-transaction", "--compact", "--add-drop-table"},
 			wantExtraEnv: []string{"MYSQL_PWD=apppw"},
 		},
 		{
 			name:         "mariadb mixes MARIADB_USER with MYSQL_PASSWORD",
 			env:          map[string]string{"MARIADB_USER": "app", "MYSQL_PASSWORD": "apppw"},
 			dbType:       "mariadb",
-			wantCmd:      []string{"mariadb-dump", "--user=app", "--all-databases", "--single-transaction", "--compact", "--add-drop-table", "--force"},
+			wantCmd:      []string{"mariadb-dump", "--user=app", "--all-databases", "--single-transaction", "--compact", "--add-drop-table"},
 			wantExtraEnv: []string{"MYSQL_PWD=apppw"},
 		},
 		{
@@ -109,6 +109,28 @@ func TestDumpCmd(t *testing.T) {
 				t.Errorf("DumpCmd() extraEnv = %v, want %v", extraEnv, tt.wantExtraEnv)
 			}
 		})
+	}
+}
+
+// TestDumpCmdNeverUsesForce guards against --force reappearing on any dump
+// command: it makes mysqldump/mariadb-dump continue past SQL errors and exit
+// 0 on a silently incomplete dump (issue #2).
+func TestDumpCmdNeverUsesForce(t *testing.T) {
+	env := map[string]string{
+		"MYSQL_ROOT_PASSWORD":   "rootpw",
+		"POSTGRES_PASSWORD":     "pgpw",
+		"MARIADB_ROOT_PASSWORD": "rootpw",
+	}
+	for _, dbType := range []string{"postgres", "mysql", "mariadb"} {
+		cmd, _, err := DumpCmd(env, dbType)
+		if err != nil {
+			t.Fatalf("DumpCmd(%s) error: %v", dbType, err)
+		}
+		for _, arg := range cmd {
+			if arg == "--force" || arg == "-f" {
+				t.Errorf("DumpCmd(%s) contains %s: %v", dbType, arg, cmd)
+			}
+		}
 	}
 }
 
