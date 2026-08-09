@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 func TestEnvOrDefault(t *testing.T) {
@@ -87,6 +88,33 @@ func TestEnvInt(t *testing.T) {
 	}
 }
 
+func TestEnvDuration(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		set   bool
+		def   time.Duration
+		want  time.Duration
+	}{
+		{"unset returns default", "", false, time.Hour, time.Hour},
+		{"valid duration", "90m", true, time.Hour, 90 * time.Minute},
+		{"seconds", "30s", true, time.Hour, 30 * time.Second},
+		{"garbage falls back to default", "soon", true, time.Hour, time.Hour},
+		{"bare number falls back to default", "5", true, time.Hour, time.Hour},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.set {
+				t.Setenv("RDB_TEST_DURATION", tt.value)
+			}
+			if got := envDuration("RDB_TEST_DURATION", tt.def); got != tt.want {
+				t.Errorf("envDuration(%q, %v) = %v, want %v", tt.value, tt.def, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoad(t *testing.T) {
 	// Clear every variable Load reads so ambient environment cannot leak in.
 	// t.Setenv registers restoration of the original value; the subsequent
@@ -101,6 +129,8 @@ func TestLoad(t *testing.T) {
 			"RESTIC_KEEP_DAILY", "RESTIC_KEEP_WEEKLY", "RESTIC_KEEP_MONTHLY",
 			"RESTIC_KEEP_YEARLY", "RESTIC_KEEP_LAST", "RESTIC_KEEP_HOURLY",
 			"RESTIC_KEEP_WITHIN",
+			"RDB_HEALTHCHECK_URL", "RDB_MAINTENANCE_HEALTHCHECK_URL",
+			"RDB_STATE_FILE", "RDB_HEALTH_GRACE",
 		} {
 			t.Setenv(key, "")
 			os.Unsetenv(key)
@@ -159,6 +189,16 @@ func TestLoad(t *testing.T) {
 			t.Errorf("KeepLast/KeepHourly/KeepWithin = %d/%d/%q, want 0/0/\"\"",
 				cfg.KeepLast, cfg.KeepHourly, cfg.KeepWithin)
 		}
+		if cfg.HealthcheckURL != "" || cfg.MaintenanceHealthcheckURL != "" {
+			t.Errorf("healthcheck URLs = %q/%q, want both empty by default",
+				cfg.HealthcheckURL, cfg.MaintenanceHealthcheckURL)
+		}
+		if cfg.StateFile != "/tmp/rdb-status" {
+			t.Errorf("StateFile = %q, want %q", cfg.StateFile, "/tmp/rdb-status")
+		}
+		if cfg.HealthGrace != time.Hour {
+			t.Errorf("HealthGrace = %v, want %v", cfg.HealthGrace, time.Hour)
+		}
 	})
 
 	t.Run("explicit values override defaults", func(t *testing.T) {
@@ -175,6 +215,10 @@ func TestLoad(t *testing.T) {
 		t.Setenv("RESTIC_KEEP_DAILY", "14")
 		t.Setenv("RESTIC_KEEP_LAST", "5")
 		t.Setenv("RESTIC_KEEP_WITHIN", "30d")
+		t.Setenv("RDB_HEALTHCHECK_URL", "https://hc.example.com/ping/uuid-1")
+		t.Setenv("RDB_MAINTENANCE_HEALTHCHECK_URL", "https://hc.example.com/ping/uuid-2")
+		t.Setenv("RDB_STATE_FILE", "/var/lib/rdb/status")
+		t.Setenv("RDB_HEALTH_GRACE", "2h")
 
 		cfg, err := Load()
 		if err != nil {
@@ -202,6 +246,18 @@ func TestLoad(t *testing.T) {
 		}
 		if cfg.ResticHostname != "my-backup-host" {
 			t.Errorf("ResticHostname = %q, want %q", cfg.ResticHostname, "my-backup-host")
+		}
+		if cfg.HealthcheckURL != "https://hc.example.com/ping/uuid-1" {
+			t.Errorf("HealthcheckURL = %q", cfg.HealthcheckURL)
+		}
+		if cfg.MaintenanceHealthcheckURL != "https://hc.example.com/ping/uuid-2" {
+			t.Errorf("MaintenanceHealthcheckURL = %q", cfg.MaintenanceHealthcheckURL)
+		}
+		if cfg.StateFile != "/var/lib/rdb/status" {
+			t.Errorf("StateFile = %q", cfg.StateFile)
+		}
+		if cfg.HealthGrace != 2*time.Hour {
+			t.Errorf("HealthGrace = %v, want 2h", cfg.HealthGrace)
 		}
 	})
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config holds all configuration parsed from environment variables.
@@ -37,6 +38,18 @@ type Config struct {
 	KeepLast    int
 	KeepHourly  int
 	KeepWithin  string
+
+	// Health reporting. HealthcheckURL is pinged after each backup run and
+	// MaintenanceHealthcheckURL after each maintenance run, both with
+	// healthchecks.io semantics (success to the URL, failures to <url>/fail).
+	HealthcheckURL            string
+	MaintenanceHealthcheckURL string
+	// StateFile records the outcome of the last runs for `rdb health`.
+	StateFile string
+	// HealthGrace is how far past its next scheduled run a job may be before
+	// `rdb health` reports it overdue; it must cover the run duration itself,
+	// since state is written when a run completes.
+	HealthGrace time.Duration
 }
 
 // Load reads configuration from environment variables and returns a validated Config.
@@ -58,6 +71,11 @@ func Load() (*Config, error) {
 		KeepLast:           envInt("RESTIC_KEEP_LAST", 0),
 		KeepHourly:         envInt("RESTIC_KEEP_HOURLY", 0),
 		KeepWithin:         envOrDefault("RESTIC_KEEP_WITHIN", ""),
+
+		HealthcheckURL:            os.Getenv("RDB_HEALTHCHECK_URL"),
+		MaintenanceHealthcheckURL: os.Getenv("RDB_MAINTENANCE_HEALTHCHECK_URL"),
+		StateFile:                 envOrDefault("RDB_STATE_FILE", "/tmp/rdb-status"),
+		HealthGrace:               envDuration("RDB_HEALTH_GRACE", time.Hour),
 	}
 
 	if cfg.ResticRepository == "" {
@@ -102,6 +120,18 @@ func envBool(key string, def bool) bool {
 		return def
 	}
 	return b
+}
+
+func envDuration(key string, def time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return def
+	}
+	return d
 }
 
 func envInt(key string, def int) int {
