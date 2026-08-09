@@ -22,6 +22,21 @@ type Snapshot struct {
 	Hostname string   `json:"hostname"`
 }
 
+// TagPartial marks a snapshot created from a database dump that later
+// reported failure and could not be deleted. Such snapshots hold truncated
+// data and are excluded from listing and restore.
+const TagPartial = "partial"
+
+// HasTag reports whether the snapshot carries the given tag.
+func (s Snapshot) HasTag(tag string) bool {
+	for _, t := range s.Tags {
+		if t == tag {
+			return true
+		}
+	}
+	return false
+}
+
 // RetentionPolicy specifies how many snapshots to keep.
 type RetentionPolicy struct {
 	Daily   int
@@ -62,13 +77,53 @@ func (r *Runner) BackupDir(path string, tags []string) error {
 	return r.run(nil, args...)
 }
 
-// BackupFromStdin streams data from reader into restic using --stdin.
-func (r *Runner) BackupFromStdin(filename string, reader io.Reader, tags []string) error {
-	args := []string{"backup", "--stdin", "--stdin-filename", filename}
+// BackupFromStdin streams data from reader into restic using --stdin and
+// returns the ID of the created snapshot, parsed from restic's --json
+// summary message. The ID is returned even when restic itself fails, if a
+// snapshot was committed before the failure, so callers can clean it up. An
+// empty ID with a nil error means the backup succeeded but the summary could
+// not be parsed.
+func (r *Runner) BackupFromStdin(filename string, reader io.Reader, tags []string) (string, error) {
+	args := []string{"backup", "--json", "--stdin", "--stdin-filename", filename}
 	for _, t := range tags {
 		args = append(args, "--tag", t)
 	}
-	return r.run(reader, args...)
+	out, err := r.runCapture(reader, args...)
+	snapshotID := parseBackupSummary(out)
+	if err != nil {
+		return snapshotID, err
+	}
+	if snapshotID == "" {
+		log.Warn().Msg("restic backup succeeded but no snapshot ID found in its output")
+	} else {
+		log.Debug().Str("snapshot", snapshotID).Msg("created snapshot")
+	}
+	return snapshotID, nil
+}
+
+// backupMessage is one line of restic's --json backup output.
+type backupMessage struct {
+	MessageType string `json:"message_type"`
+	SnapshotID  string `json:"snapshot_id"`
+}
+
+// parseBackupSummary extracts the created snapshot ID from restic's --json
+// backup output, or returns "" if no summary message is present.
+func parseBackupSummary(out []byte) string {
+	for _, line := range bytes.Split(out, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var msg backupMessage
+		if err := json.Unmarshal(line, &msg); err != nil {
+			continue
+		}
+		if msg.MessageType == "summary" && msg.SnapshotID != "" {
+			return msg.SnapshotID
+		}
+	}
+	return ""
 }
 
 // Snapshots runs "restic snapshots --latest 1" to verify the repository is accessible.
@@ -97,6 +152,24 @@ func (r *Runner) Forget(policy RetentionPolicy) error {
 	return r.run(nil, args...)
 }
 
+// ForgetSnapshot removes a single snapshot by ID.
+func (r *Runner) ForgetSnapshot(snapshotID string) error {
+	return r.run(nil, "forget", snapshotID)
+}
+
+// TagSnapshot adds tags to an existing snapshot.
+func (r *Runner) TagSnapshot(snapshotID string, tags []string) error {
+	return r.run(nil, tagAddArgs(snapshotID, tags)...)
+}
+
+func tagAddArgs(snapshotID string, tags []string) []string {
+	args := []string{"tag"}
+	for _, t := range tags {
+		args = append(args, "--add", t)
+	}
+	return append(args, snapshotID)
+}
+
 // Prune removes unreferenced data from the repository.
 func (r *Runner) Prune() error {
 	return r.run(nil, "prune")
@@ -109,7 +182,7 @@ func (r *Runner) Check() error {
 
 // SnapshotsByID returns snapshot metadata for a specific snapshot ID.
 func (r *Runner) SnapshotsByID(id string) ([]Snapshot, error) {
-	out, err := r.runCapture("snapshots", id, "--json")
+	out, err := r.runCapture(nil, "snapshots", id, "--json")
 	if err != nil {
 		return nil, err
 	}
@@ -120,9 +193,10 @@ func (r *Runner) SnapshotsByID(id string) ([]Snapshot, error) {
 	return snaps, nil
 }
 
-// SnapshotsAll returns all rdb-managed snapshots.
+// SnapshotsAll returns all rdb-managed snapshots, excluding partial-tagged
+// snapshots left behind by failed database dumps.
 func (r *Runner) SnapshotsAll() ([]Snapshot, error) {
-	out, err := r.runCapture("snapshots", "--tag", "rdb", "--json")
+	out, err := r.runCapture(nil, "snapshots", "--tag", "rdb", "--json")
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +204,18 @@ func (r *Runner) SnapshotsAll() ([]Snapshot, error) {
 	if err := json.Unmarshal(out, &snaps); err != nil {
 		return nil, fmt.Errorf("parsing snapshot JSON: %w", err)
 	}
-	return snaps, nil
+	return excludePartial(snaps), nil
+}
+
+// excludePartial filters out snapshots tagged as partial.
+func excludePartial(snaps []Snapshot) []Snapshot {
+	kept := make([]Snapshot, 0, len(snaps))
+	for _, s := range snaps {
+		if !s.HasTag(TagPartial) {
+			kept = append(kept, s)
+		}
+	}
+	return kept
 }
 
 // Restore runs "restic restore <snapshotID> --target <target> --verify",
@@ -214,8 +299,11 @@ func (r *Runner) run(stdin io.Reader, args ...string) error {
 	return nil
 }
 
-// runCapture executes restic and returns captured stdout bytes.
-func (r *Runner) runCapture(args ...string) ([]byte, error) {
+// runCapture executes restic and returns captured stdout bytes. If stdin is
+// non-nil it is connected to the command's stdin. Captured output is
+// returned even when the command fails, so callers can inspect partial
+// output (e.g. a backup summary emitted before restic exited non-zero).
+func (r *Runner) runCapture(stdin io.Reader, args ...string) ([]byte, error) {
 	log.Debug().Strs("args", args).Msg("running restic")
 
 	cmd := exec.Command("restic", args...)
@@ -224,8 +312,12 @@ func (r *Runner) runCapture(args ...string) ([]byte, error) {
 	cmd.Stderr = os.Stderr
 	cmd.Env = os.Environ()
 
+	if stdin != nil {
+		cmd.Stdin = stdin
+	}
+
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("restic %v: %w", args, err)
+		return buf.Bytes(), fmt.Errorf("restic %v: %w", args, err)
 	}
 	return buf.Bytes(), nil
 }

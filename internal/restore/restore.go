@@ -40,6 +40,9 @@ func (r *Restorer) Restore(ctx context.Context, opts Options) error {
 	}
 
 	snap := snaps[0]
+	if hasTag(snap, restic.TagPartial) {
+		return fmt.Errorf("snapshot %s is tagged %q: it holds a truncated dump from a failed backup and cannot be restored", snap.ShortID, restic.TagPartial)
+	}
 	dbType := snapshotDBType(snap)
 
 	if dbType != "" {
