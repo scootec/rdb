@@ -89,14 +89,27 @@ func DumpCmd(env map[string]string, dbType string) (cmd []string, extraEnv []str
 			"--user=" + c.user,
 			"--all-databases",
 			"--single-transaction",
-			"--compact",
-			// --add-drop-table must come after --compact, which disables
-			// the default per-table DROP statements (last flag wins). The
-			// drops make a restore into a non-empty server converge to the
-			// backup state. --add-drop-database is not an option: with
-			// --all-databases it emits DROP DATABASE for the mysql system
-			// schema, which MySQL 8.0+ refuses to drop, aborting the
-			// restore.
+			// --quick streams rows to the client one at a time instead of
+			// buffering whole result sets in memory, keeping large tables
+			// from blowing up the dump process.
+			"--quick",
+			// Stored procedures/functions and scheduled events are NOT
+			// dumped by default — without these flags they are silently
+			// lost. --triggers is default-on but explicit for clarity.
+			"--routines",
+			"--events",
+			"--triggers",
+			// No --compact: it strips the standard preamble including the
+			// /*!40101 SET NAMES */ charset statements, so restoring
+			// through a session with a different default charset can
+			// corrupt non-ASCII data. The size saving is pointless given
+			// restic's deduplication and compression.
+			//
+			// --add-drop-table (default-on, kept explicit) makes a restore
+			// into a non-empty server converge to the backup state.
+			// --add-drop-database is not an option: with --all-databases
+			// it emits DROP DATABASE for the mysql system schema, which
+			// MySQL 8.0+ refuses to drop, aborting the restore.
 			//
 			// No --force: it would continue past SQL errors and produce a
 			// silently incomplete dump that exits 0. A backup must fail
@@ -112,11 +125,16 @@ func DumpCmd(env map[string]string, dbType string) (cmd []string, extraEnv []str
 			"--user=" + c.user,
 			"--all-databases",
 			"--single-transaction",
-			"--compact",
-			// See the mysql case: --add-drop-table must follow --compact,
-			// --add-drop-database would drop the mysql system schema
-			// (the grant tables) mid-restore, and --force would hide dump
-			// errors behind an exit code of 0.
+			// See the mysql case: --quick streams large tables,
+			// --routines/--events are not dumped by default, no --compact
+			// because it strips the charset preamble, --add-drop-database
+			// would drop the mysql system schema (the grant tables)
+			// mid-restore, and --force would hide dump errors behind an
+			// exit code of 0.
+			"--quick",
+			"--routines",
+			"--events",
+			"--triggers",
 			"--add-drop-table",
 		}
 		return cmd, mysqlExtraEnv(c), nil
