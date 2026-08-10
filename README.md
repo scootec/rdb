@@ -50,6 +50,10 @@ rdb initialises the repository on first run, backs up on the configured schedule
 | `rdb.postgres` | `true` | Dump all PostgreSQL databases (`pg_dumpall`) |
 | `rdb.mysql` | `true` | Dump all MySQL databases (`mysqldump --all-databases`) |
 | `rdb.mariadb` | `true` | Dump all MariaDB databases (`mariadb-dump --all-databases`) |
+| `rdb.pre-backup` | shell command | Run this command inside the container before backing it up (see [Pre- and post-backup scripts](#pre--and-post-backup-scripts)) |
+| `rdb.pre-backup.timeout` | Go duration | Time limit for the pre-backup script (default `15m`) |
+| `rdb.post-backup` | shell command | Run this command inside the container after backing it up |
+| `rdb.post-backup.timeout` | Go duration | Time limit for the post-backup script (default `15m`) |
 
 ## Environment variables
 
@@ -174,6 +178,51 @@ volumes:
 ```
 
 Volumes are stored in restic under their host path. Bind mounts are included by default; set `RDB_EXCLUDE_BIND_MOUNTS=true` to skip them.
+
+## Pre- and post-backup scripts
+
+Some applications provide their own backup command that produces a consistent, restorable
+export — for example [BookStack's system CLI](https://www.bookstackapp.com/docs/admin/system-cli/).
+The `rdb.pre-backup` label runs such a command inside the container before its volumes and
+databases are backed up, so you can generate the export and then back up just the directory
+it lands in:
+
+```yaml
+services:
+  bookstack:
+    image: lscr.io/linuxserver/bookstack:latest
+    volumes:
+      - bookstack-backups:/backups
+    labels:
+      rdb.volumes: "true"
+      rdb.volumes.include: /backups
+      rdb.pre-backup: "cd /app/www && ./bookstack-system-cli backup /backups/bookstack.zip"
+      rdb.post-backup: "rm -f /backups/bookstack.zip"
+
+volumes:
+  bookstack-backups:
+```
+
+How the scripts behave:
+
+- **Execution.** The command runs inside the labelled container via `sh -c`, as the
+  container's default user (the image must have `sh`). To run as another user, wrap the
+  command yourself, e.g. `su -s /bin/sh www-data -c '...'`.
+- **Ordering.** The pre-backup script runs before everything else for that container —
+  before `rdb.volumes.stop-during-backup` stops it, and before volume backups and database
+  dumps. The post-backup script runs after all of the container's backups (and after a
+  stopped container has been restarted).
+- **Failure.** A pre-backup script that exits non-zero **fails the container's backup and
+  skips it** — backing up a stale export would silently masquerade as a good backup. A
+  failing post-backup script also marks the run failed. Failures are reported through the
+  usual channels (exit status, health state, webhook pings) with the script's stderr in the
+  error.
+- **Cleanup semantics.** The post-backup script is a `finally` block: it runs even when the
+  pre-backup script or the backups failed, and even when the run was cancelled or timed
+  out, so export artifacts don't accumulate. Both scripts require a running container —
+  they cannot run against a stopped one.
+- **Timeouts.** Each script is bounded by its `.timeout` label (default `15m`), so a hung
+  export cannot eat the whole run's `RDB_BACKUP_TIMEOUT` budget.
 
 ## CLI commands
 

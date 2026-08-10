@@ -148,6 +148,59 @@ func (c *Client) ExecImport(ctx context.Context, containerID string, cmd []strin
 	return nil
 }
 
+// ExecCommand runs a command inside the target container, waits for it to
+// finish, and returns an error when it exits non-zero (with captured stderr)
+// or when ctx is cancelled. Used for pre/post-backup scripts.
+func (c *Client) ExecCommand(ctx context.Context, containerID string, cmd []string) error {
+	execConfig := container.ExecOptions{
+		Cmd:          cmd,
+		AttachStdout: true,
+		AttachStderr: true,
+	}
+
+	execID, err := c.cli.ContainerExecCreate(ctx, containerID, execConfig)
+	if err != nil {
+		return fmt.Errorf("exec create: %w", err)
+	}
+
+	resp, err := c.cli.ContainerExecAttach(ctx, execID.ID, container.ExecStartOptions{})
+	if err != nil {
+		return fmt.Errorf("exec attach: %w", err)
+	}
+	defer resp.Close()
+
+	// I/O on the hijacked connection does not honour context on its own:
+	// closing the connection is the only way to unblock the copy below.
+	stopWatch := context.AfterFunc(ctx, func() { resp.Close() })
+	defer stopWatch()
+
+	stdout := newBoundedBuffer(execOutputLimit)
+	stderr := newBoundedBuffer(execOutputLimit)
+	if _, demuxErr := stdcopy.StdCopy(stdout, stderr, resp.Reader); demuxErr != nil {
+		log.Debug().Err(demuxErr).Msg("demuxing exec output")
+	}
+
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("exec command cancelled: %w", ctxErr)
+	}
+
+	if stdout.Len() > 0 {
+		log.Debug().Str("stdout", stdout.String()).Msg("exec command output")
+	}
+
+	exitCode, err := c.ExecExitCode(ctx, execID.ID)
+	if err != nil {
+		return err
+	}
+	if exitCode != 0 {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return fmt.Errorf("exec command exited with code %d: %s", exitCode, msg)
+		}
+		return fmt.Errorf("exec command exited with code %d", exitCode)
+	}
+	return nil
+}
+
 // execOutputLimit caps how much exec stdout/stderr is retained in memory.
 const execOutputLimit = 32 * 1024
 
