@@ -5,14 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
+	"github.com/rs/zerolog/log"
 )
 
 const labelPrefix = "rdb."
+
+// DefaultHookTimeout bounds a pre/post-backup script when no
+// rdb.{pre,post}-backup.timeout label is set.
+const DefaultHookTimeout = 15 * time.Minute
 
 // ContainerInfo holds parsed backup configuration for a single container.
 type ContainerInfo struct {
@@ -33,6 +39,12 @@ type ContainerInfo struct {
 	PostgresEnabled bool
 	MySQLEnabled    bool
 	MariaDBEnabled  bool
+
+	// Backup script hooks, run inside the container via `sh -c`
+	PreBackupCmd      string
+	PreBackupTimeout  time.Duration
+	PostBackupCmd     string
+	PostBackupTimeout time.Duration
 
 	// All environment variables of the container (for DB credentials)
 	Env map[string]string
@@ -118,6 +130,11 @@ func (c *Client) parseContainer(ctx context.Context, id string, labels map[strin
 		PostgresEnabled:        labelBool(labels, "rdb.postgres", false),
 		MySQLEnabled:           labelBool(labels, "rdb.mysql", false),
 		MariaDBEnabled:         labelBool(labels, "rdb.mariadb", false),
+
+		PreBackupCmd:      strings.TrimSpace(labels["rdb.pre-backup"]),
+		PreBackupTimeout:  labelDuration(labels, "rdb.pre-backup.timeout", DefaultHookTimeout),
+		PostBackupCmd:     strings.TrimSpace(labels["rdb.post-backup"]),
+		PostBackupTimeout: labelDuration(labels, "rdb.post-backup.timeout", DefaultHookTimeout),
 	}
 
 	if inc := labels["rdb.volumes.include"]; inc != "" {
@@ -232,6 +249,23 @@ func labelBool(labels map[string]string, key string, def bool) bool {
 	}
 	v = strings.ToLower(strings.TrimSpace(v))
 	return v == "true" || v == "1" || v == "yes"
+}
+
+// labelDuration parses a Go duration label. A missing label returns def; an
+// invalid or non-positive value is logged and falls back to def rather than
+// failing discovery for the whole run over one typo.
+func labelDuration(labels map[string]string, key string, def time.Duration) time.Duration {
+	v, ok := labels[key]
+	if !ok {
+		return def
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(v))
+	if err != nil || d <= 0 {
+		log.Warn().Str("label", key).Str("value", v).Dur("default", def).
+			Msg("invalid duration label, using default")
+		return def
+	}
+	return d
 }
 
 func splitComma(s string) []string {

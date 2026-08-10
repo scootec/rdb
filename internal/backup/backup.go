@@ -75,6 +75,8 @@ func (o *Orchestrator) Status(ctx context.Context) error {
 			Bool("postgres", ctr.PostgresEnabled).
 			Bool("mysql", ctr.MySQLEnabled).
 			Bool("mariadb", ctr.MariaDBEnabled).
+			Bool("pre-backup", ctr.PreBackupCmd != "").
+			Bool("post-backup", ctr.PostBackupCmd != "").
 			Msg("container")
 	}
 	return nil
@@ -83,29 +85,31 @@ func (o *Orchestrator) Status(ctx context.Context) error {
 func (o *Orchestrator) backupContainer(ctx context.Context, ctr docker.ContainerInfo) error {
 	log.Info().Str("container", ctr.Name).Msg("backing up container")
 
-	if ctr.VolumesEnabled {
-		if err := backupVolumes(ctx, o.dc, o.rc, ctr, o.cfg.ExcludeBindMounts); err != nil {
-			return err
+	return runWithHooks(ctx, o.dc, ctr, func(ctx context.Context) error {
+		if ctr.VolumesEnabled {
+			if err := backupVolumes(ctx, o.dc, o.rc, ctr, o.cfg.ExcludeBindMounts); err != nil {
+				return err
+			}
 		}
-	}
 
-	if ctr.PostgresEnabled {
-		if err := dumpDatabase(ctx, o.dc, o.rc, ctr, "postgres"); err != nil {
-			return err
+		if ctr.PostgresEnabled {
+			if err := dumpDatabase(ctx, o.dc, o.rc, ctr, "postgres"); err != nil {
+				return err
+			}
 		}
-	}
 
-	if ctr.MySQLEnabled {
-		if err := dumpDatabase(ctx, o.dc, o.rc, ctr, "mysql"); err != nil {
-			return err
+		if ctr.MySQLEnabled {
+			if err := dumpDatabase(ctx, o.dc, o.rc, ctr, "mysql"); err != nil {
+				return err
+			}
 		}
-	}
 
-	if ctr.MariaDBEnabled {
-		if err := dumpDatabase(ctx, o.dc, o.rc, ctr, "mariadb"); err != nil {
-			return err
+		if ctr.MariaDBEnabled {
+			if err := dumpDatabase(ctx, o.dc, o.rc, ctr, "mariadb"); err != nil {
+				return err
+			}
 		}
-	}
 
-	return nil
+		return nil
+	})
 }
