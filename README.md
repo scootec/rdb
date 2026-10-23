@@ -19,7 +19,7 @@ services:
       AWS_SECRET_ACCESS_KEY: ...
 
   postgres:
-    image: postgres:17
+    image: postgres:18
     labels:
       rdb.postgres: "true"
     environment:
@@ -361,4 +361,4 @@ No manual tagging is needed. See [CLAUDE.md](CLAUDE.md) for commit message guide
 go build -o rdb ./cmd/rdb
 ```
 
-Requires Go 1.24+ and a `restic` binary on `PATH`.
+Requires Go 1.27+ and a `restic` binary on `PATH`.

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types"
+	"github.com/moby/moby/client"
 )
 
 func TestBoundedBuffer(t *testing.T) {
@@ -67,7 +67,7 @@ func blockedExecReader(ctx context.Context) (*execReader, net.Conn) {
 	local, remote := net.Pipe()
 	r := &execReader{
 		ctx:  ctx,
-		conn: types.HijackedResponse{Conn: local, Reader: bufio.NewReader(local)},
+		conn: client.HijackedResponse{Conn: local, Reader: bufio.NewReader(local)},
 	}
 	return r, remote
 }

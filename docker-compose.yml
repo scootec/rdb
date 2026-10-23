@@ -13,7 +13,7 @@ services:
       - RDB_LOG_LEVEL=info
 
   postgres:
-    image: postgres:17
+    image: postgres:18
     labels:
       rdb.postgres: "true"
     environment:
@@ -22,14 +22,14 @@ services:
       POSTGRES_DB: mydb
 
   mysql:
-    image: mysql:8
+    image: mysql:26
     labels:
       rdb.mysql: "true"
     environment:
       MYSQL_ROOT_PASSWORD: secret
 
   mariadb:
-    image: mariadb:11
+    image: mariadb:13
     labels:
       rdb.mariadb: "true"
     environment:

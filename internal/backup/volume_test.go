@@ -4,13 +4,13 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/mount"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
 	"github.com/scootec/rdb/internal/docker"
 )
 
-func mountPoint(mType, name, source, dest string) types.MountPoint {
-	return types.MountPoint{
+func mountPoint(mType, name, source, dest string) container.MountPoint {
+	return container.MountPoint{
 		Type:        mount.Type(mType),
 		Name:        name,
 		Source:      source,
@@ -18,7 +18,7 @@ func mountPoint(mType, name, source, dest string) types.MountPoint {
 	}
 }
 
-func destinations(mounts []types.MountPoint) []string {
+func destinations(mounts []container.MountPoint) []string {
 	var out []string
 	for _, m := range mounts {
 		out = append(out, m.Destination)
@@ -39,19 +39,19 @@ func TestFilterMounts(t *testing.T) {
 	}{
 		{
 			name: "no filters returns all mounts",
-			ctr:  docker.ContainerInfo{Mounts: []types.MountPoint{dataVol, configVol, bind}},
+			ctr:  docker.ContainerInfo{Mounts: []container.MountPoint{dataVol, configVol, bind}},
 			want: []string{"/data", "/config", "/logs"},
 		},
 		{
 			name:              "excludeBindMounts drops bind mounts",
-			ctr:               docker.ContainerInfo{Mounts: []types.MountPoint{dataVol, bind}},
+			ctr:               docker.ContainerInfo{Mounts: []container.MountPoint{dataVol, bind}},
 			excludeBindMounts: true,
 			want:              []string{"/data"},
 		},
 		{
 			name: "include filter keeps only listed destinations",
 			ctr: docker.ContainerInfo{
-				Mounts:         []types.MountPoint{dataVol, configVol, bind},
+				Mounts:         []container.MountPoint{dataVol, configVol, bind},
 				VolumesInclude: []string{"/data"},
 			},
 			want: []string{"/data"},
@@ -59,7 +59,7 @@ func TestFilterMounts(t *testing.T) {
 		{
 			name: "exclude filter drops listed destinations",
 			ctr: docker.ContainerInfo{
-				Mounts:         []types.MountPoint{dataVol, configVol},
+				Mounts:         []container.MountPoint{dataVol, configVol},
 				VolumesExclude: []string{"/config"},
 			},
 			want: []string{"/data"},
@@ -67,7 +67,7 @@ func TestFilterMounts(t *testing.T) {
 		{
 			name: "exclude wins over include",
 			ctr: docker.ContainerInfo{
-				Mounts:         []types.MountPoint{dataVol, configVol},
+				Mounts:         []container.MountPoint{dataVol, configVol},
 				VolumesInclude: []string{"/data", "/config"},
 				VolumesExclude: []string{"/config"},
 			},
@@ -78,7 +78,7 @@ func TestFilterMounts(t *testing.T) {
 			// because contains uses strings.EqualFold (see issue #16).
 			name: "include filter matches case-insensitively",
 			ctr: docker.ContainerInfo{
-				Mounts:         []types.MountPoint{dataVol},
+				Mounts:         []container.MountPoint{dataVol},
 				VolumesInclude: []string{"/DATA"},
 			},
 			want: []string{"/data"},
@@ -103,7 +103,7 @@ func TestFilterMounts(t *testing.T) {
 func TestResolveHostPath(t *testing.T) {
 	tests := []struct {
 		name  string
-		mount types.MountPoint
+		mount container.MountPoint
 		want  string
 	}{
 		{

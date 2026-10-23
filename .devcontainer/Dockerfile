@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/devcontainers/go:1.24
+FROM mcr.microsoft.com/devcontainers/go:1.27
 
 # Install restic for local testing
 RUN apt-get update && apt-get install -y --no-install-recommends \
