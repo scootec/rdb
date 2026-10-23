@@ -271,7 +271,7 @@ services:
       - /home/user/containers:/home/user/containers           # read-write for restore
 ```
 
-Volume restore writes files back to their original absolute paths inside the rdb container, restricted to the paths recorded in the snapshot (`restic restore --include`), and verifies the restored files against the repository (`--verify`). If the host path isn't mounted (or is mounted read-only), the restore will fail.
+Volume restore writes files back to their original absolute paths inside the rdb container, restricted to the paths recorded in the snapshot (`restic restore --include`), and verifies the restored files against the repository (`--verify`). Files inside those paths that are not in the snapshot — created after the backup was taken — are deleted (`--delete`), so each volume ends up exactly as it was backed up; nothing outside the snapshot's paths is touched. If the host path isn't mounted (or is mounted read-only), the restore will fail.
 
 ### Listing snapshots
 

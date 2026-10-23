@@ -215,19 +215,19 @@ func TestRestoreArgs(t *testing.T) {
 		want       []string
 	}{
 		{
-			"no includes",
+			"no includes never deletes",
 			"abc123", "/", nil,
 			[]string{"restore", "abc123", "--target", "/", "--verify"},
 		},
 		{
-			"single include scopes the restore",
+			"single include scopes the restore and its deletions",
 			"abc123", "/", []string{"/var/lib/docker/volumes/myapp_data/_data"},
-			[]string{"restore", "abc123", "--target", "/", "--verify", "--include", "/var/lib/docker/volumes/myapp_data/_data"},
+			[]string{"restore", "abc123", "--target", "/", "--verify", "--delete", "--include", "/var/lib/docker/volumes/myapp_data/_data"},
 		},
 		{
 			"multiple includes",
 			"abc123", "/", []string{"/data/a", "/data/b"},
-			[]string{"restore", "abc123", "--target", "/", "--verify", "--include", "/data/a", "--include", "/data/b"},
+			[]string{"restore", "abc123", "--target", "/", "--verify", "--delete", "--include", "/data/a", "--include", "/data/b"},
 		},
 	}
 

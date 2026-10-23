@@ -369,13 +369,22 @@ func excludePartial(snaps []Snapshot) []Snapshot {
 }
 
 // Restore runs "restic restore <snapshotID> --target <target> --verify",
-// optionally scoped to the given include paths so only those subtrees are written.
+// optionally scoped to the given include paths so only those subtrees are
+// written. A scoped restore also passes --delete, so files under the included
+// paths that are not in the snapshot are removed and each path ends up
+// exactly as backed up rather than merged with newer files.
 func (r *Runner) Restore(ctx context.Context, snapshotID, target string, includes []string) error {
 	return r.run(ctx, nil, restoreArgs(snapshotID, target, includes)...)
 }
 
 func restoreArgs(snapshotID, target string, includes []string) []string {
 	args := []string{"restore", snapshotID, "--target", target, "--verify"}
+	// --delete is limited to the paths matched by --include. Never pass it
+	// unscoped: with --target / it would delete everything not in the
+	// snapshot.
+	if len(includes) > 0 {
+		args = append(args, "--delete")
+	}
 	for _, inc := range includes {
 		args = append(args, "--include", inc)
 	}
