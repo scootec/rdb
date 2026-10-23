@@ -40,8 +40,8 @@ func (r *Restorer) Restore(ctx context.Context, opts Options) error {
 	}
 
 	snap := snaps[0]
-	if hasTag(snap, restic.TagPartial) {
-		return fmt.Errorf("snapshot %s is tagged %q: it holds a truncated dump from a failed backup and cannot be restored", snap.ShortID, restic.TagPartial)
+	if err := validateOptions(snap, opts); err != nil {
+		return err
 	}
 	dbType := snapshotDBType(snap)
 
@@ -61,6 +61,20 @@ func (r *Restorer) Restore(ctx context.Context, opts Options) error {
 	}
 
 	return fmt.Errorf("snapshot %s has no recognized rdb type tags", snap.ShortID)
+}
+
+// validateOptions rejects snapshots that must not be restored and options
+// that do not apply to the snapshot's type.
+func validateOptions(snap restic.Snapshot, opts Options) error {
+	if hasTag(snap, restic.TagPartial) {
+		return fmt.Errorf("snapshot %s is tagged %q: it holds a truncated dump from a failed backup and cannot be restored", snap.ShortID, restic.TagPartial)
+	}
+	// --output extracts a database dump; silently ignoring it for a volume
+	// would turn an intended extraction into an in-place overwrite.
+	if opts.OutputPath != "" && snapshotDBType(snap) == "" {
+		return fmt.Errorf("snapshot %s is not a database snapshot: --output is only supported for database snapshots", snap.ShortID)
+	}
+	return nil
 }
 
 // snapshotDBType returns the database type from snapshot tags, or "" if not a database snapshot.

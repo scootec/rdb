@@ -287,27 +287,13 @@ func tagValue(snap restic.Snapshot, prefix string) string {
 	return ""
 }
 
-func runRestore(cfg *config.Config) {
-	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "Usage: rdb restore <snapshot-id> [--output <path>] [--stop] [--force]")
-		os.Exit(1)
-	}
+const restoreUsage = "Usage: rdb restore <snapshot-id> [--output <path>] [--stop] [--force]"
 
-	snapshotID := os.Args[2]
-	var outputPath string
-	var force, stop bool
-	for i := 3; i < len(os.Args); i++ {
-		switch os.Args[i] {
-		case "--output":
-			if i+1 < len(os.Args) {
-				outputPath = os.Args[i+1]
-				i++
-			}
-		case "--force":
-			force = true
-		case "--stop":
-			stop = true
-		}
+func runRestore(cfg *config.Config) {
+	opts, err := parseRestoreArgs(os.Args[2:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n%s\n", err, restoreUsage)
+		os.Exit(1)
 	}
 
 	dc, err := docker.New()
@@ -320,14 +306,47 @@ func runRestore(cfg *config.Config) {
 	restorer := restore.New(dc, rc)
 
 	ctx := context.Background()
-	if err := restorer.Restore(ctx, restore.Options{
-		SnapshotID: snapshotID,
-		OutputPath: outputPath,
-		Force:      force,
-		Stop:       stop,
-	}); err != nil {
+	if err := restorer.Restore(ctx, opts); err != nil {
 		log.Fatal().Err(err).Msg("restore failed")
 	}
+}
+
+// parseRestoreArgs parses the arguments after "restore". It is strict on
+// purpose: a database restore overwrites the live database, so a mistyped or
+// unrecognised flag — "--output=dump.sql", "--ouput", a missing path — must
+// fail instead of being ignored and falling through to an import.
+func parseRestoreArgs(args []string) (restore.Options, error) {
+	var opts restore.Options
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--output":
+			if i+1 >= len(args) || args[i+1] == "" || strings.HasPrefix(args[i+1], "-") {
+				return restore.Options{}, fmt.Errorf("--output requires a file path")
+			}
+			opts.OutputPath = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--output="):
+			opts.OutputPath = strings.TrimPrefix(arg, "--output=")
+			if opts.OutputPath == "" {
+				return restore.Options{}, fmt.Errorf("--output requires a file path")
+			}
+		case arg == "--force":
+			opts.Force = true
+		case arg == "--stop":
+			opts.Stop = true
+		case strings.HasPrefix(arg, "-"):
+			return restore.Options{}, fmt.Errorf("unknown restore option %q", arg)
+		case opts.SnapshotID == "":
+			opts.SnapshotID = arg
+		default:
+			return restore.Options{}, fmt.Errorf("unexpected argument %q: restore takes a single snapshot ID", arg)
+		}
+	}
+	if opts.SnapshotID == "" {
+		return restore.Options{}, fmt.Errorf("missing snapshot ID")
+	}
+	return opts, nil
 }
 
 func runMaintenance(cfg *config.Config) {
