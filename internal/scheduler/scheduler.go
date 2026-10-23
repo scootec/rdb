@@ -31,6 +31,9 @@ type Options struct {
 	// ShutdownGrace is how long to wait for an in-flight job to finish after
 	// SIGTERM/SIGINT before its context is cancelled and it is aborted.
 	ShutdownGrace time.Duration
+	// Location is the time zone job schedules are evaluated in. Nil means
+	// time.Local.
+	Location *time.Location
 }
 
 // abortDrain is how long aborted jobs get to unwind after their context is
@@ -51,18 +54,25 @@ func Run(jobs []Job, opts Options) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	c := cron.New(cron.WithChain(cron.SkipIfStillRunning(cronLogger{})))
+	loc := opts.Location
+	if loc == nil {
+		loc = time.Local
+	}
+	c := cron.New(cron.WithLocation(loc), cron.WithChain(cron.SkipIfStillRunning(cronLogger{})))
 	var mu sync.Mutex
 
 	for _, job := range jobs {
-		if _, err := c.AddFunc(job.Schedule, guarded(ctx, &mu, job)); err != nil {
+		id, err := c.AddFunc(job.Schedule, guarded(ctx, &mu, job))
+		if err != nil {
 			return fmt.Errorf("invalid schedule %q for job %s: %w", job.Schedule, job.Name, err)
 		}
-		log.Info().Str("job", job.Name).Str("schedule", job.Schedule).Dur("timeout", job.Timeout).Msg("job scheduled")
+		next := c.Entry(id).Schedule.Next(time.Now().In(loc))
+		log.Info().Str("job", job.Name).Str("schedule", job.Schedule).Dur("timeout", job.Timeout).
+			Str("next_run", next.Format(time.RFC3339)).Msg("job scheduled")
 	}
 
 	c.Start()
-	log.Info().Msg("scheduler started")
+	log.Info().Str("timezone", loc.String()).Msg("scheduler started")
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)

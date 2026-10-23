@@ -131,7 +131,7 @@ func TestLoad(t *testing.T) {
 			"RESTIC_KEEP_WITHIN",
 			"RDB_HEALTHCHECK_URL", "RDB_MAINTENANCE_HEALTHCHECK_URL",
 			"RDB_STATE_FILE", "RDB_HEALTH_GRACE",
-			"RDB_BACKUP_TIMEOUT", "RDB_SHUTDOWN_TIMEOUT",
+			"RDB_BACKUP_TIMEOUT", "RDB_SHUTDOWN_TIMEOUT", "TZ",
 		} {
 			t.Setenv(key, "")
 			os.Unsetenv(key)
@@ -303,6 +303,63 @@ func TestLoad(t *testing.T) {
 		}
 		if cfg.MaintenanceEnabled() {
 			t.Error("MaintenanceEnabled() = true, want false for 'OFF'")
+		}
+	})
+
+	t.Run("TZ unset uses the system zone", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("RESTIC_REPOSITORY", "/repo")
+		t.Setenv("RESTIC_PASSWORD", "pw")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() unexpected error: %v", err)
+		}
+		if cfg.Location != time.Local {
+			t.Errorf("Location = %v, want time.Local", cfg.Location)
+		}
+	})
+
+	t.Run("TZ selects the schedule time zone", func(t *testing.T) {
+		for _, tz := range []string{"Australia/Sydney", ":Australia/Sydney"} {
+			clearEnv(t)
+			t.Setenv("RESTIC_REPOSITORY", "/repo")
+			t.Setenv("RESTIC_PASSWORD", "pw")
+			t.Setenv("TZ", tz)
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() with TZ=%q unexpected error: %v", tz, err)
+			}
+			if got := cfg.Location.String(); got != "Australia/Sydney" {
+				t.Errorf("TZ=%q: Location = %q, want Australia/Sydney", tz, got)
+			}
+		}
+	})
+
+	t.Run("empty TZ means UTC", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("RESTIC_REPOSITORY", "/repo")
+		t.Setenv("RESTIC_PASSWORD", "pw")
+		t.Setenv("TZ", "")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() unexpected error: %v", err)
+		}
+		if cfg.Location != time.UTC {
+			t.Errorf("Location = %v, want UTC", cfg.Location)
+		}
+	})
+
+	t.Run("unknown TZ errors", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("RESTIC_REPOSITORY", "/repo")
+		t.Setenv("RESTIC_PASSWORD", "pw")
+		t.Setenv("TZ", "Mars/Olympus_Mons")
+
+		if _, err := Load(); err == nil {
+			t.Fatal("Load() expected error for unknown TZ, got nil")
 		}
 	})
 }

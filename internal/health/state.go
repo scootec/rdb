@@ -99,8 +99,10 @@ func writeState(path string, s State) error {
 
 // Evaluate reports why the last runs are unhealthy, or nil if all is well.
 // A job is unhealthy when its last run failed, or when its next scheduled run
-// after the recorded timestamp is more than grace past due. Jobs without an
-// entry in schedules (or with an unparseable schedule) skip the overdue check.
+// after the recorded timestamp is more than grace past due. Schedules are
+// evaluated in now's location, which must match the scheduler's. Jobs without
+// an entry in schedules (or with an unparseable schedule) skip the overdue
+// check.
 func Evaluate(s State, schedules map[string]string, grace time.Duration, now time.Time) error {
 	jobs := make([]string, 0, len(s))
 	for job := range s {
@@ -122,7 +124,9 @@ func Evaluate(s State, schedules map[string]string, grace time.Duration, now tim
 		if err != nil {
 			continue
 		}
-		due := sched.Next(r.Timestamp)
+		// The stored timestamp carries only a UTC offset, so convert it back
+		// to the zone; otherwise a DST change since the run shifts "due".
+		due := sched.Next(r.Timestamp.In(now.Location()))
 		if now.After(due.Add(grace)) {
 			problems = append(problems, fmt.Sprintf("%s run overdue: was due %s, grace %s",
 				job, due.Format(time.RFC3339), grace))

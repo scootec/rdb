@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	_ "time/tzdata"
 )
 
 func statePath(t *testing.T) string {
@@ -210,5 +211,41 @@ func TestEvaluateIgnoresUnparseableSchedule(t *testing.T) {
 	err := Evaluate(state, map[string]string{"backup": "not a cron"}, time.Hour, time.Now())
 	if err != nil {
 		t.Fatalf("Evaluate() = %v, want healthy when schedule is unparseable", err)
+	}
+}
+
+func TestEvaluateUsesNowLocation(t *testing.T) {
+	tokyo, err := time.LoadLocation("Asia/Tokyo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Daily at 02:00 Tokyo time. The last run was 02:00 JST yesterday and it
+	// is now 02:30 JST, so today's run is due but still within grace. Read
+	// in UTC, the same schedule would put a missed run at 11:00 JST yesterday.
+	schedules := map[string]string{"backup": "0 2 * * *"}
+	last := time.Date(2026, 8, 8, 2, 0, 0, 0, tokyo).UTC()
+	now := time.Date(2026, 8, 9, 2, 30, 0, 0, tokyo)
+
+	state := State{"backup": {Timestamp: last, OK: true}}
+	if err := Evaluate(state, schedules, time.Hour, now); err != nil {
+		t.Fatalf("Evaluate() = %v, want healthy in Asia/Tokyo", err)
+	}
+}
+
+func TestEvaluateAcrossDSTChange(t *testing.T) {
+	london, err := time.LoadLocation("Europe/London")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// BST ends at 02:00 on 2026-10-25. The last run (03:00 BST) comes back
+	// from the state file as a fixed +01:00 offset; the next run is due at
+	// 03:00 GMT, not 03:00 +01:00, so at 03:30 GMT it is still within grace.
+	schedules := map[string]string{"backup": "0 3 * * *"}
+	last := time.Date(2026, 10, 24, 3, 0, 0, 0, time.FixedZone("", 3600))
+	now := time.Date(2026, 10, 25, 3, 30, 0, 0, london)
+
+	state := State{"backup": {Timestamp: last, OK: true}}
+	if err := Evaluate(state, schedules, time.Hour, now); err != nil {
+		t.Fatalf("Evaluate() = %v, want healthy across the DST change", err)
 	}
 }
