@@ -147,7 +147,7 @@ func runScheduler(cfg *config.Config) {
 		jobs = append(jobs, scheduler.Job{
 			Name:     "maintenance",
 			Schedule: cfg.MaintenanceCron,
-			Timeout:  cfg.BackupTimeout,
+			Timeout:  cfg.MaintenanceTimeout,
 			Fn: reported(cfg.StateFile, "maintenance", health.NewPinger(cfg.MaintenanceHealthcheckURL), func(ctx context.Context) error {
 				if err := rc.Prune(ctx); err != nil {
 					return err
