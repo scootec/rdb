@@ -71,16 +71,23 @@ func streamDumpToRestic(ctx context.Context, reader dumpStream, execExitCode fun
 		return fmt.Errorf("restic backup stdin (%s/%s): %w", ctr.Name, dbType, err)
 	}
 
-	// Check if the dump command itself failed
-	exitCode, inspectErr := execExitCode(ctx, reader.ExecID())
-	if inspectErr != nil {
-		log.Warn().Err(inspectErr).Str("container", ctr.Name).Str("db", dbType).Msg("could not inspect exec exit code")
-	} else if exitCode != 0 {
+	// Check if the dump command itself failed. A dump whose exit code cannot
+	// be determined is treated as failed: a truncated dump must never be kept
+	// as a good backup. The check runs detached from the run's cancellation
+	// so a timeout firing just after restic finished does not discard a good
+	// dump unchecked.
+	inspectCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), exitCodeTimeout)
+	defer cancel()
+	exitCode, inspectErr := execExitCode(inspectCtx, reader.ExecID())
+	if inspectErr != nil || exitCode != 0 {
 		if snapshotID == "" {
 			log.Warn().Str("container", ctr.Name).Str("db", dbType).
 				Msg("dump failed but its snapshot could not be identified; a truncated snapshot may remain in the repository")
 		} else {
 			discardPartialSnapshot(ctx, rc, snapshotID, ctr.Name, dbType)
+		}
+		if inspectErr != nil {
+			return fmt.Errorf("could not determine dump exit code (%s/%s): %w", ctr.Name, dbType, inspectErr)
 		}
 		return fmt.Errorf("dump command exited with code %d (%s/%s): %s", exitCode, ctr.Name, dbType, reader.Stderr())
 	}
@@ -91,6 +98,9 @@ func streamDumpToRestic(ctx context.Context, reader dumpStream, execExitCode fun
 		Msg("database dump complete")
 	return nil
 }
+
+// exitCodeTimeout bounds the detached lookup of a finished dump's exit code.
+const exitCodeTimeout = time.Minute
 
 // discardCleanupTimeout bounds the detached cleanup of a failed dump's snapshot.
 const discardCleanupTimeout = 5 * time.Minute

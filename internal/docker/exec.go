@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/client"
@@ -233,14 +234,44 @@ func (b *boundedBuffer) String() string {
 	return b.buf.String()
 }
 
-// ExitCode returns the exit code of the exec after the reader has been fully consumed and closed.
+// execExitPollInterval and execExitWait bound how long ExecExitCode waits for
+// Docker to record an exec's exit; variables so tests can shrink them.
+var (
+	execExitPollInterval = 100 * time.Millisecond
+	execExitWait         = 10 * time.Second
+)
+
+// ExecExitCode returns the exit code of the exec after the reader has been
+// fully consumed and closed.
 func (c *Client) ExecExitCode(ctx context.Context, execID string) (int, error) {
-	inspect, err := c.cli.ExecInspect(ctx, execID, client.ExecInspectOptions{})
-	if err != nil {
-		return -1, fmt.Errorf("exec inspect: %w", err)
+	return waitExecExit(ctx, func(ctx context.Context) (bool, int, error) {
+		inspect, err := c.cli.ExecInspect(ctx, execID, client.ExecInspectOptions{})
+		if err != nil {
+			return false, -1, fmt.Errorf("exec inspect: %w", err)
+		}
+		return inspect.Running, inspect.ExitCode, nil
+	})
+}
+
+// waitExecExit polls inspect until the exec is no longer running and returns
+// its exit code. Docker closes an exec's output stream when the process
+// exits but records the exit code asynchronously, so an inspect made right
+// after EOF can still report the exec as running.
+func waitExecExit(ctx context.Context, inspect func(context.Context) (running bool, exitCode int, err error)) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, execExitWait)
+	defer cancel()
+	for {
+		running, exitCode, err := inspect(ctx)
+		if err != nil {
+			return -1, err
+		}
+		if !running {
+			return exitCode, nil
+		}
+		select {
+		case <-ctx.Done():
+			return -1, fmt.Errorf("exec still running: %w", ctx.Err())
+		case <-time.After(execExitPollInterval):
+		}
 	}
-	if inspect.Running {
-		return -1, fmt.Errorf("exec still running")
-	}
-	return inspect.ExitCode, nil
 }
