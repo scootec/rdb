@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/docker/api/types"
+	"github.com/moby/moby/api/types/container"
 	"github.com/rs/zerolog/log"
 	"github.com/scootec/rdb/internal/docker"
 	"github.com/scootec/rdb/internal/restic"
@@ -61,8 +61,8 @@ func backupVolumes(ctx context.Context, dc *docker.Client, rc *restic.Runner, ct
 }
 
 // filterMounts returns the mounts that should be backed up, applying include/exclude filters.
-func filterMounts(ctr docker.ContainerInfo, excludeBindMounts bool) []types.MountPoint {
-	var result []types.MountPoint
+func filterMounts(ctr docker.ContainerInfo, excludeBindMounts bool) []container.MountPoint {
+	var result []container.MountPoint
 	for _, m := range ctr.Mounts {
 		// Optionally skip host bind mounts
 		if excludeBindMounts && m.Type == "bind" {
@@ -89,7 +89,7 @@ func filterMounts(ctr docker.ContainerInfo, excludeBindMounts bool) []types.Moun
 // resolveHostPath returns the path on the rdb container's filesystem for the given mount.
 // Named volumes are accessed via /var/lib/docker/volumes/<name>/_data.
 // Bind mounts are accessed directly via their Source path.
-func resolveHostPath(mount types.MountPoint) string {
+func resolveHostPath(mount container.MountPoint) string {
 	switch mount.Type {
 	case "volume":
 		if mount.Name != "" {

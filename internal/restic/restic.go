@@ -87,7 +87,7 @@ func newCmd(ctx context.Context, args ...string) *exec.Cmd {
 }
 
 // Exit codes restic uses to differentiate failures, introduced in restic 0.17
-// (the Dockerfile pins restic/restic:0.17.3). Older restic versions exit 1 for
+// (the Dockerfile pins restic/restic:0.19.1). Older restic versions exit 1 for
 // everything; those land in the "unknown" branch below and are reported with
 // the probe's stderr instead of being guessed at.
 const (

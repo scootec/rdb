@@ -7,10 +7,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/client"
 	"github.com/rs/zerolog/log"
 )
 
@@ -20,7 +18,7 @@ import (
 type execReader struct {
 	cli    *client.Client
 	execID string
-	conn   types.HijackedResponse
+	conn   client.HijackedResponse
 	ctx    context.Context
 
 	// pr/pw are the demuxed pipe ends
@@ -83,7 +81,7 @@ func (r *execReader) Close() error {
 // ExecImport runs a command inside the target container and streams stdin into it.
 // This is the inverse of ExecDump — used to pipe data (e.g. SQL dumps) into a container.
 func (c *Client) ExecImport(ctx context.Context, containerID string, cmd []string, extraEnv []string, stdin io.Reader) error {
-	execConfig := container.ExecOptions{
+	execConfig := client.ExecCreateOptions{
 		Cmd:          cmd,
 		Env:          extraEnv,
 		AttachStdin:  true,
@@ -91,12 +89,12 @@ func (c *Client) ExecImport(ctx context.Context, containerID string, cmd []strin
 		AttachStderr: true,
 	}
 
-	execID, err := c.cli.ContainerExecCreate(ctx, containerID, execConfig)
+	execID, err := c.cli.ExecCreate(ctx, containerID, execConfig)
 	if err != nil {
 		return fmt.Errorf("exec create: %w", err)
 	}
 
-	resp, err := c.cli.ContainerExecAttach(ctx, execID.ID, container.ExecStartOptions{})
+	resp, err := c.cli.ExecAttach(ctx, execID.ID, client.ExecAttachOptions{})
 	if err != nil {
 		return fmt.Errorf("exec attach: %w", err)
 	}
@@ -152,18 +150,18 @@ func (c *Client) ExecImport(ctx context.Context, containerID string, cmd []strin
 // finish, and returns an error when it exits non-zero (with captured stderr)
 // or when ctx is cancelled. Used for pre/post-backup scripts.
 func (c *Client) ExecCommand(ctx context.Context, containerID string, cmd []string) error {
-	execConfig := container.ExecOptions{
+	execConfig := client.ExecCreateOptions{
 		Cmd:          cmd,
 		AttachStdout: true,
 		AttachStderr: true,
 	}
 
-	execID, err := c.cli.ContainerExecCreate(ctx, containerID, execConfig)
+	execID, err := c.cli.ExecCreate(ctx, containerID, execConfig)
 	if err != nil {
 		return fmt.Errorf("exec create: %w", err)
 	}
 
-	resp, err := c.cli.ContainerExecAttach(ctx, execID.ID, container.ExecStartOptions{})
+	resp, err := c.cli.ExecAttach(ctx, execID.ID, client.ExecAttachOptions{})
 	if err != nil {
 		return fmt.Errorf("exec attach: %w", err)
 	}
@@ -237,7 +235,7 @@ func (b *boundedBuffer) String() string {
 
 // ExitCode returns the exit code of the exec after the reader has been fully consumed and closed.
 func (c *Client) ExecExitCode(ctx context.Context, execID string) (int, error) {
-	inspect, err := c.cli.ContainerExecInspect(ctx, execID)
+	inspect, err := c.cli.ExecInspect(ctx, execID, client.ExecInspectOptions{})
 	if err != nil {
 		return -1, fmt.Errorf("exec inspect: %w", err)
 	}

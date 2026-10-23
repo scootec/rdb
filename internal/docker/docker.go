@@ -7,10 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 	"github.com/rs/zerolog/log"
 )
 
@@ -50,7 +48,7 @@ type ContainerInfo struct {
 	Env map[string]string
 
 	// Mounts reported by Docker
-	Mounts []types.MountPoint
+	Mounts []container.MountPoint
 }
 
 // Client wraps the Docker Engine API client.
@@ -60,7 +58,7 @@ type Client struct {
 
 // New creates a new Client using the DOCKER_HOST environment variable (or default socket).
 func New() (*Client, error) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		return nil, fmt.Errorf("creating docker client: %w", err)
 	}
@@ -74,16 +72,15 @@ func (c *Client) Close() error {
 
 // DiscoverContainers lists all running containers that have at least one rdb.* label.
 func (c *Client) DiscoverContainers(ctx context.Context) ([]ContainerInfo, error) {
-	f := filters.NewArgs()
-	f.Add("status", "running")
+	f := make(client.Filters).Add("status", "running")
 
-	containers, err := c.cli.ContainerList(ctx, container.ListOptions{Filters: f})
+	containers, err := c.cli.ContainerList(ctx, client.ContainerListOptions{Filters: f})
 	if err != nil {
 		return nil, fmt.Errorf("listing containers: %w", err)
 	}
 
 	var result []ContainerInfo
-	for _, ctr := range containers {
+	for _, ctr := range containers.Items {
 		if !hasRDBLabel(ctr.Labels) {
 			continue
 		}
@@ -106,10 +103,11 @@ func hasRDBLabel(labels map[string]string) bool {
 }
 
 func (c *Client) parseContainer(ctx context.Context, id string, labels map[string]string) (ContainerInfo, error) {
-	inspect, err := c.cli.ContainerInspect(ctx, id)
+	res, err := c.cli.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 	if err != nil {
 		return ContainerInfo{}, fmt.Errorf("inspecting container %s: %w", id, err)
 	}
+	inspect := res.Container
 
 	name := strings.TrimPrefix(inspect.Name, "/")
 	project := inspect.Config.Labels["com.docker.compose.project"]
@@ -163,19 +161,19 @@ func (r *ExecDumpReader) ExecID() string {
 // reader is closed. The caller is responsible for closing the returned reader.
 // Cancelling ctx closes the underlying connection and unblocks pending reads.
 func (c *Client) ExecDump(ctx context.Context, containerID string, cmd []string, extraEnv []string) (*ExecDumpReader, int, error) {
-	execConfig := container.ExecOptions{
+	execConfig := client.ExecCreateOptions{
 		Cmd:          cmd,
 		Env:          extraEnv,
 		AttachStdout: true,
 		AttachStderr: true,
 	}
 
-	execID, err := c.cli.ContainerExecCreate(ctx, containerID, execConfig)
+	execID, err := c.cli.ExecCreate(ctx, containerID, execConfig)
 	if err != nil {
 		return nil, -1, fmt.Errorf("exec create: %w", err)
 	}
 
-	resp, err := c.cli.ContainerExecAttach(ctx, execID.ID, container.ExecStartOptions{})
+	resp, err := c.cli.ExecAttach(ctx, execID.ID, client.ExecAttachOptions{})
 	if err != nil {
 		return nil, -1, fmt.Errorf("exec attach: %w", err)
 	}
@@ -183,7 +181,7 @@ func (c *Client) ExecDump(ctx context.Context, containerID string, cmd []string,
 	return &ExecDumpReader{&execReader{
 		cli:    c.cli,
 		execID: execID.ID,
-		conn:   resp,
+		conn:   resp.HijackedResponse,
 		ctx:    ctx,
 	}}, 0, nil
 }
@@ -191,12 +189,14 @@ func (c *Client) ExecDump(ctx context.Context, containerID string, cmd []string,
 // StopContainer stops the given container.
 func (c *Client) StopContainer(ctx context.Context, containerID string) error {
 	timeout := 30
-	return c.cli.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &timeout})
+	_, err := c.cli.ContainerStop(ctx, containerID, client.ContainerStopOptions{Timeout: &timeout})
+	return err
 }
 
 // StartContainer starts the given container.
 func (c *Client) StartContainer(ctx context.Context, containerID string) error {
-	return c.cli.ContainerStart(ctx, containerID, container.StartOptions{})
+	_, err := c.cli.ContainerStart(ctx, containerID, client.ContainerStartOptions{})
+	return err
 }
 
 // ErrContainerNotFound is returned by FindContainer when no running container
