@@ -64,7 +64,8 @@ rdb initialises the repository on first run, backs up on the configured schedule
 | `RDB_CRON_SCHEDULE` | `0 2 * * *` | Backup schedule (5-field cron) |
 | `RDB_MAINTENANCE_CRON` | `0 4 * * 0` | Prune + check schedule (5-field cron). Empty or `off` disables scheduled maintenance |
 | `TZ` | system zone (UTC in the image) | IANA time zone the cron schedules run in, e.g. `Australia/Sydney` (see [Time zone](#time-zone)) |
-| `RDB_BACKUP_TIMEOUT` | `2h` | Maximum duration of a single scheduled run (Go duration). A run that exceeds it is aborted so a hung dump cannot block future backups. `0` disables the limit |
+| `RDB_BACKUP_TIMEOUT` | `2h` | Maximum duration of a single scheduled backup run (Go duration). A run that exceeds it is aborted so a hung dump cannot block future backups. `0` disables the limit |
+| `RDB_MAINTENANCE_TIMEOUT` | `12h` | Maximum duration of a single scheduled maintenance run (prune + check, Go duration). Prune and check of a large remote repository can take hours, so this is separate from and longer than the backup timeout. `0` disables the limit |
 | `RDB_SHUTDOWN_TIMEOUT` | `5m` | On SIGTERM/SIGINT, how long an in-flight run may keep going before it is aborted (see [Scheduler lifecycle](#scheduler-lifecycle)) |
 | `RDB_RESTIC_HOSTNAME` | `rdb` | Stable hostname recorded on snapshots (see [Retention and maintenance](#retention-and-maintenance)) |
 | `RDB_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
@@ -127,7 +128,7 @@ Avoid scheduling jobs inside the daylight-saving transition window (typically 01
 Three guards keep the scheduler predictable under long or hung runs:
 
 - **No overlap.** A run that outlasts its schedule interval (large volume, slow remote, restic waiting on a lock) never overlaps the next tick — the tick is skipped and logged instead. This applies both to a job overlapping itself and to backup vs. maintenance.
-- **Run timeout.** Each scheduled run is bounded by `RDB_BACKUP_TIMEOUT` (default `2h`). When it expires the run's context is cancelled: hung database dumps are unblocked by closing the Docker connection, restic receives SIGINT (so it releases its repository locks) and is killed if it ignores it. A snapshot committed from a dump that was cut off mid-stream is deleted, or tagged `partial` if deletion fails, exactly as for any other failed dump. Without a timeout, a dump hung on a locked table plus overlap protection would silently stop all future backups.
+- **Run timeout.** Each scheduled backup run is bounded by `RDB_BACKUP_TIMEOUT` (default `2h`), and each maintenance run by `RDB_MAINTENANCE_TIMEOUT` (default `12h`). When it expires the run's context is cancelled: hung database dumps are unblocked by closing the Docker connection, restic receives SIGINT (so it releases its repository locks) and is killed if it ignores it. A snapshot committed from a dump that was cut off mid-stream is deleted, or tagged `partial` if deletion fails, exactly as for any other failed dump. Without a timeout, a dump hung on a locked table plus overlap protection would silently stop all future backups.
 - **Graceful shutdown.** On SIGTERM/SIGINT (e.g. `docker compose down` or an image upgrade) the scheduler stops firing new ticks and waits up to `RDB_SHUTDOWN_TIMEOUT` (default `5m`) for an in-flight run to finish, so restic is not killed mid-backup. If the run is still going after the grace period — or a second signal arrives — it is aborted as above and rdb exits. Give the container a `stop_grace_period` slightly larger than `RDB_SHUTDOWN_TIMEOUT`, otherwise Docker sends SIGKILL first:
 
 ```yaml
@@ -140,6 +141,8 @@ services:
 ## Health monitoring
 
 Backup systems fail silently: a crashed scheduler or a misconfigured credential produces no output at all. rdb offers two independent signals, and success is reported as explicitly as failure — "no news" is distinguishable from "notifier is broken".
+
+A backup run also counts as failed when it would otherwise back up less than you expect: when no containers with rdb labels are found at all (wrong Docker socket, labels lost when a stack was recreated), or when a labelled container is not running (exited, restarting, paused) and so could not be backed up. Remove a retired container (`docker rm`) rather than leaving it stopped, or its labels keep failing the run. Containers created by `docker compose run` are ignored.
 
 ### Webhook pings (healthchecks.io compatible)
 
@@ -226,9 +229,10 @@ How the scripts behave:
   container's default user (the image must have `sh`). To run as another user, wrap the
   command yourself, e.g. `su -s /bin/sh www-data -c '...'`.
 - **Ordering.** The pre-backup script runs before everything else for that container —
-  before `rdb.volumes.stop-during-backup` stops it, and before volume backups and database
-  dumps. The post-backup script runs after all of the container's backups (and after a
-  stopped container has been restarted).
+  before database dumps and volume backups, and before `rdb.volumes.stop-during-backup`
+  stops it. Database dumps run before the volume backup, so a container that is stopped
+  for its volume backup is dumped while it is still up. The post-backup script runs after
+  all of the container's backups (and after a stopped container has been restarted).
 - **Failure.** A pre-backup script that exits non-zero **fails the container's backup and
   skips it** — backing up a stale export would silently masquerade as a good backup. A
   failing post-backup script also marks the run failed. Failures are reported through the
@@ -269,7 +273,7 @@ services:
       - /home/user/containers:/home/user/containers           # read-write for restore
 ```
 
-Volume restore writes files back to their original absolute paths inside the rdb container, restricted to the paths recorded in the snapshot (`restic restore --include`), and verifies the restored files against the repository (`--verify`). If the host path isn't mounted (or is mounted read-only), the restore will fail.
+Volume restore writes files back to their original absolute paths inside the rdb container, restricted to the paths recorded in the snapshot (`restic restore --include`), and verifies the restored files against the repository (`--verify`). Files inside those paths that are not in the snapshot — created after the backup was taken — are deleted (`--delete`), so each volume ends up exactly as it was backed up; nothing outside the snapshot's paths is touched. If the host path isn't mounted (or is mounted read-only), the restore will fail.
 
 ### Listing snapshots
 

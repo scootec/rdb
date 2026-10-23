@@ -114,3 +114,52 @@ func TestExecReaderCloseWithoutCancellation(t *testing.T) {
 		t.Fatal("Close blocked on a live context — watcher not stopped")
 	}
 }
+
+// shrinkExecExitWait makes waitExecExit poll fast and give up quickly.
+func shrinkExecExitWait(t *testing.T, wait time.Duration) {
+	t.Helper()
+	origInterval, origWait := execExitPollInterval, execExitWait
+	execExitPollInterval, execExitWait = time.Millisecond, wait
+	t.Cleanup(func() { execExitPollInterval, execExitWait = origInterval, origWait })
+}
+
+func TestWaitExecExitPollsUntilExitRecorded(t *testing.T) {
+	shrinkExecExitWait(t, 5*time.Second)
+
+	// Docker reports the exec as running for a few inspects after the
+	// output stream closed, then records exit code 2.
+	calls := 0
+	inspect := func(context.Context) (bool, int, error) {
+		calls++
+		if calls < 3 {
+			return true, 0, nil
+		}
+		return false, 2, nil
+	}
+
+	code, err := waitExecExit(context.Background(), inspect)
+	if err != nil {
+		t.Fatalf("waitExecExit() error = %v", err)
+	}
+	if code != 2 {
+		t.Errorf("waitExecExit() = %d, want 2 (the recorded exit code, not the zero reported while running)", code)
+	}
+}
+
+func TestWaitExecExitGivesUpOnStuckExec(t *testing.T) {
+	shrinkExecExitWait(t, 20*time.Millisecond)
+
+	inspect := func(context.Context) (bool, int, error) { return true, 0, nil }
+	if _, err := waitExecExit(context.Background(), inspect); err == nil {
+		t.Fatal("waitExecExit() error = nil, want error for an exec that never exits")
+	}
+}
+
+func TestWaitExecExitReturnsInspectError(t *testing.T) {
+	shrinkExecExitWait(t, 5*time.Second)
+
+	inspect := func(context.Context) (bool, int, error) { return false, 0, errors.New("no such exec") }
+	if _, err := waitExecExit(context.Background(), inspect); err == nil {
+		t.Fatal("waitExecExit() error = nil, want the inspect error")
+	}
+}

@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/rs/zerolog/log"
@@ -29,14 +30,21 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		return fmt.Errorf("discovering containers: %w", err)
 	}
 
+	idle, err := o.dc.DiscoverIdleContainers(ctx)
+	if err != nil {
+		return fmt.Errorf("discovering containers: %w", err)
+	}
+
+	errs := discoveryErrors(len(containers), idle)
+	for _, err := range errs {
+		log.Error().Err(err).Msg("backup target not available")
+	}
 	if len(containers) == 0 {
-		log.Warn().Msg("no containers with rdb labels found")
-		return nil
+		return errors.Join(errs...)
 	}
 
 	log.Info().Int("count", len(containers)).Msg("discovered containers for backup")
 
-	var errs []error
 	for _, ctr := range containers {
 		if err := ctx.Err(); err != nil {
 			log.Warn().Err(err).Msg("backup run cancelled, skipping remaining containers")
@@ -54,6 +62,21 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	return nil
 }
 
+// discoveryErrors reports backup targets that silently would not be backed
+// up: no labelled containers at all (wrong Docker socket, labels lost on
+// recreation, stack down), or labelled containers that are not running. Each
+// counts as a failed backup so the run — and health checks — show it.
+func discoveryErrors(running int, idle []docker.IdleContainer) []error {
+	var errs []error
+	if running == 0 && len(idle) == 0 {
+		errs = append(errs, fmt.Errorf("no containers with rdb labels found — nothing was backed up"))
+	}
+	for _, ctr := range idle {
+		errs = append(errs, fmt.Errorf("container %s has rdb labels but is %s — it was not backed up (start it, or remove the container if it is retired)", ctr.Name, ctr.State))
+	}
+	return errs
+}
+
 // Status prints discovered containers and their backup configuration.
 func (o *Orchestrator) Status(ctx context.Context) error {
 	containers, err := o.dc.DiscoverContainers(ctx)
@@ -61,9 +84,19 @@ func (o *Orchestrator) Status(ctx context.Context) error {
 		return fmt.Errorf("discovering containers: %w", err)
 	}
 
-	if len(containers) == 0 {
+	idle, err := o.dc.DiscoverIdleContainers(ctx)
+	if err != nil {
+		return fmt.Errorf("discovering containers: %w", err)
+	}
+
+	if len(containers) == 0 && len(idle) == 0 {
 		log.Info().Msg("no containers with rdb labels found")
 		return nil
+	}
+
+	for _, ctr := range idle {
+		log.Warn().Str("container", ctr.Name).Str("state", ctr.State).
+			Msg("container has rdb labels but is not running — it will not be backed up")
 	}
 
 	for _, ctr := range containers {
@@ -86,30 +119,41 @@ func (o *Orchestrator) backupContainer(ctx context.Context, ctr docker.Container
 	log.Info().Str("container", ctr.Name).Msg("backing up container")
 
 	return runWithHooks(ctx, o.dc, ctr, func(ctx context.Context) error {
-		if ctr.VolumesEnabled {
-			if err := backupVolumes(ctx, o.dc, o.rc, ctr, o.cfg.ExcludeBindMounts); err != nil {
-				return err
-			}
-		}
-
-		if ctr.PostgresEnabled {
-			if err := dumpDatabase(ctx, o.dc, o.rc, ctr, "postgres"); err != nil {
-				return err
-			}
-		}
-
-		if ctr.MySQLEnabled {
-			if err := dumpDatabase(ctx, o.dc, o.rc, ctr, "mysql"); err != nil {
-				return err
-			}
-		}
-
-		if ctr.MariaDBEnabled {
-			if err := dumpDatabase(ctx, o.dc, o.rc, ctr, "mariadb"); err != nil {
-				return err
-			}
-		}
-
-		return nil
+		return runBackupSteps(ctx, ctr,
+			func(ctx context.Context, dbType string) error {
+				return dumpDatabase(ctx, o.dc, o.rc, ctr, dbType)
+			},
+			func(ctx context.Context) error {
+				return backupVolumes(ctx, o.dc, o.rc, ctr, o.cfg.ExcludeBindMounts)
+			})
 	})
+}
+
+// runBackupSteps runs a container's enabled database dumps, then its volume
+// backup, stopping at the first failure. Dumps go first because they need
+// the database up and accepting connections, while the volume backup may
+// stop and restart the container (rdb.volumes.stop-during-backup) — a dump
+// started right after that restart would race the database's startup.
+func runBackupSteps(ctx context.Context, ctr docker.ContainerInfo, dump func(context.Context, string) error, volumes func(context.Context) error) error {
+	dbs := []struct {
+		enabled bool
+		dbType  string
+	}{
+		{ctr.PostgresEnabled, "postgres"},
+		{ctr.MySQLEnabled, "mysql"},
+		{ctr.MariaDBEnabled, "mariadb"},
+	}
+	for _, db := range dbs {
+		if !db.enabled {
+			continue
+		}
+		if err := dump(ctx, db.dbType); err != nil {
+			return err
+		}
+	}
+
+	if ctr.VolumesEnabled {
+		return volumes(ctx)
+	}
+	return nil
 }

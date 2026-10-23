@@ -58,7 +58,7 @@ func (r *Restorer) restoreDatabase(ctx context.Context, snap restic.Snapshot, db
 	}
 
 	if err := r.dc.ExecImport(ctx, ctr.ID, cmd, extraEnv, filtered); err != nil {
-		return fmt.Errorf("importing %s dump into %s: %w", dbType, ctr.Name, err)
+		return fmt.Errorf("importing %s dump into %s (the database may be partially restored): %w", dbType, ctr.Name, err)
 	}
 
 	log.Info().
@@ -68,16 +68,21 @@ func (r *Restorer) restoreDatabase(ctx context.Context, snap restic.Snapshot, db
 	return nil
 }
 
-// dumpToFile writes the reader contents to the given file path.
+// dumpToFile writes the reader contents to the given file path. On failure
+// the partial file is removed so a truncated dump is never left behind
+// looking complete.
 func dumpToFile(reader io.Reader, path string) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("creating output file: %w", err)
 	}
-	defer f.Close()
 
 	n, err := io.Copy(f, reader)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
 	if err != nil {
+		os.Remove(path)
 		return fmt.Errorf("writing dump to file: %w", err)
 	}
 

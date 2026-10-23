@@ -173,18 +173,40 @@ func TestStreamDumpToResticBackupErrorDiscardsCommittedSnapshot(t *testing.T) {
 	}
 }
 
-func TestStreamDumpToResticInspectErrorDoesNotFail(t *testing.T) {
-	// Preserve existing behaviour: an uninspectable exit code logs a
-	// warning but does not fail the backup.
+func TestStreamDumpToResticInspectErrorFailsAndDiscards(t *testing.T) {
+	// A dump whose exit code cannot be determined may be truncated, so it
+	// must fail the backup and its snapshot must be discarded.
 	rc := &fakeRestic{snapshotID: "abc123"}
 	stream := &fakeDumpStream{Reader: strings.NewReader("data"), execID: "exec1"}
 
 	err := streamDumpToRestic(context.Background(), stream, exitWith(-1, errors.New("inspect failed")), rc, testCtr, "postgres")
-	if err != nil {
-		t.Fatalf("streamDumpToRestic() error = %v, want nil when exit code cannot be inspected", err)
+	if err == nil {
+		t.Fatal("streamDumpToRestic() error = nil, want failure when exit code cannot be inspected")
+	}
+	if !reflect.DeepEqual(rc.forgotten, []string{"abc123"}) {
+		t.Errorf("forgotten = %v, want unverified snapshot discarded", rc.forgotten)
+	}
+}
+
+func TestStreamDumpToResticInspectsExitCodeAfterCancellation(t *testing.T) {
+	// The run's context may expire right after restic finishes; the exit
+	// code must still be checked rather than failing a good dump.
+	rc := &fakeRestic{snapshotID: "abc123"}
+	stream := &fakeDumpStream{Reader: strings.NewReader("data"), execID: "exec1"}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	inspect := func(ctx context.Context, _ string) (int, error) {
+		if err := ctx.Err(); err != nil {
+			return -1, err
+		}
+		return 0, nil
+	}
+	if err := streamDumpToRestic(ctx, stream, inspect, rc, testCtr, "postgres"); err != nil {
+		t.Fatalf("streamDumpToRestic() error = %v, want nil for a dump that exited 0", err)
 	}
 	if len(rc.forgotten) != 0 || len(rc.tagged) != 0 {
-		t.Errorf("forget=%v tag=%v, want no cleanup", rc.forgotten, rc.tagged)
+		t.Errorf("forget=%v tag=%v, want good snapshot kept", rc.forgotten, rc.tagged)
 	}
 }
 

@@ -79,3 +79,27 @@ func TestParseTagValue(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateOptions(t *testing.T) {
+	tests := []struct {
+		name    string
+		snap    restic.Snapshot
+		opts    Options
+		wantErr bool
+	}{
+		{"database import", snapWithTags("rdb", "postgres"), Options{}, false},
+		{"database to file", snapWithTags("rdb", "mysql"), Options{OutputPath: "/tmp/dump.sql"}, false},
+		{"volume restore", snapWithTags("rdb", "volume"), Options{Stop: true}, false},
+		{"partial snapshot refused", snapWithTags("rdb", "postgres", restic.TagPartial), Options{}, true},
+		{"--output on a volume refused", snapWithTags("rdb", "volume"), Options{OutputPath: "/tmp/out"}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateOptions(tt.snap, tt.opts)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateOptions() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
