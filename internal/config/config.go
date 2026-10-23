@@ -16,6 +16,9 @@ type Config struct {
 
 	// Scheduler
 	CronSchedule string
+	// Location is the time zone cron schedules are evaluated in, taken from
+	// the standard TZ variable. Unset TZ falls back to the system zone.
+	Location *time.Location
 	// MaintenanceCron schedules prune + check. Empty or "off" disables it.
 	MaintenanceCron string
 	// BackupTimeout bounds a single scheduled run (backup or maintenance):
@@ -87,6 +90,12 @@ func Load() (*Config, error) {
 		HealthGrace:               envDuration("RDB_HEALTH_GRACE", time.Hour),
 	}
 
+	loc, err := loadLocation()
+	if err != nil {
+		return nil, err
+	}
+	cfg.Location = loc
+
 	if cfg.ResticRepository == "" {
 		return nil, fmt.Errorf("RESTIC_REPOSITORY is required")
 	}
@@ -100,6 +109,33 @@ func Load() (*Config, error) {
 // MaintenanceEnabled reports whether the scheduled prune + check job is enabled.
 func (c *Config) MaintenanceEnabled() bool {
 	return c.MaintenanceCron != "" && !strings.EqualFold(c.MaintenanceCron, "off")
+}
+
+// loadLocation resolves the TZ variable the way the Go runtime does for
+// time.Local, but fails loudly on an unknown zone instead of silently
+// falling back to UTC, which would shift every scheduled run.
+func loadLocation() (*time.Location, error) {
+	tz, ok := os.LookupEnv("TZ")
+	if !ok {
+		return time.Local, nil
+	}
+	tz = strings.TrimPrefix(tz, ":")
+	if strings.HasPrefix(tz, "/") {
+		data, err := os.ReadFile(tz)
+		if err != nil {
+			return nil, fmt.Errorf("TZ: %w", err)
+		}
+		loc, err := time.LoadLocationFromTZData(tz, data)
+		if err != nil {
+			return nil, fmt.Errorf("TZ: invalid time zone file %s: %w", tz, err)
+		}
+		return loc, nil
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return nil, fmt.Errorf("TZ: unknown time zone %q (use an IANA name such as Europe/London)", tz)
+	}
+	return loc, nil
 }
 
 // envAllowEmpty returns the default only when key is unset. Unlike

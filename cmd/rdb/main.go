@@ -9,6 +9,9 @@ import (
 	"syscall"
 	"text/tabwriter"
 	"time"
+	// Embed the IANA time zone database so TZ works even in images
+	// without /usr/share/zoneinfo.
+	_ "time/tzdata"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -161,7 +164,7 @@ func runScheduler(cfg *config.Config) {
 		log.Warn().Err(err).Str("path", cfg.StateFile).Msg("failed to write health state file")
 	}
 
-	if err := scheduler.Run(jobs, scheduler.Options{ShutdownGrace: cfg.ShutdownTimeout}); err != nil {
+	if err := scheduler.Run(jobs, scheduler.Options{ShutdownGrace: cfg.ShutdownTimeout, Location: cfg.Location}); err != nil {
 		log.Fatal().Err(err).Msg("scheduler error")
 	}
 }
@@ -258,7 +261,7 @@ func runSnapshots(cfg *config.Config) {
 		t, err := time.Parse(time.RFC3339Nano, snap.Time)
 		timeStr := snap.Time
 		if err == nil {
-			timeStr = t.Local().Format("2006-01-02 15:04")
+			timeStr = t.In(cfg.Location).Format("2006-01-02 15:04")
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", snap.ShortID, timeStr, snapType, project, service, path)
 	}
@@ -368,7 +371,7 @@ func runHealth(cfg *config.Config) {
 		schedules["maintenance"] = cfg.MaintenanceCron
 	}
 
-	if err := health.Evaluate(state, schedules, cfg.HealthGrace, time.Now()); err != nil {
+	if err := health.Evaluate(state, schedules, cfg.HealthGrace, time.Now().In(cfg.Location)); err != nil {
 		fmt.Fprintf(os.Stderr, "unhealthy: %v\n", err)
 		os.Exit(1)
 	}

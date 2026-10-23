@@ -63,6 +63,7 @@ rdb initialises the repository on first run, backs up on the configured schedule
 | `RESTIC_PASSWORD` | **required** | Repository encryption password |
 | `RDB_CRON_SCHEDULE` | `0 2 * * *` | Backup schedule (5-field cron) |
 | `RDB_MAINTENANCE_CRON` | `0 4 * * 0` | Prune + check schedule (5-field cron). Empty or `off` disables scheduled maintenance |
+| `TZ` | system zone (UTC in the image) | IANA time zone the cron schedules run in, e.g. `Australia/Sydney` (see [Time zone](#time-zone)) |
 | `RDB_BACKUP_TIMEOUT` | `2h` | Maximum duration of a single scheduled run (Go duration). A run that exceeds it is aborted so a hung dump cannot block future backups. `0` disables the limit |
 | `RDB_SHUTDOWN_TIMEOUT` | `5m` | On SIGTERM/SIGINT, how long an in-flight run may keep going before it is aborted (see [Scheduler lifecycle](#scheduler-lifecycle)) |
 | `RDB_RESTIC_HOSTNAME` | `rdb` | Stable hostname recorded on snapshots (see [Retention and maintenance](#retention-and-maintenance)) |
@@ -104,6 +105,22 @@ Notes on how retention is applied:
 - Backups record a stable hostname (`RDB_RESTIC_HOSTNAME`, default `rdb`) so restic's parent-snapshot selection keeps volume backups incremental across container recreations.
 
 `rdb maintenance` runs forget + prune + check once, immediately, regardless of these schedules.
+
+## Time zone
+
+Schedules are evaluated in the zone named by the standard `TZ` variable, so `0 2 * * *` with `TZ=Europe/London` runs at 02:00 London time and follows daylight-saving changes. Without `TZ` the container's zone applies, which is UTC in the published image.
+
+```yaml
+environment:
+  TZ: Europe/London
+  RDB_CRON_SCHEDULE: "0 2 * * *"
+```
+
+The time zone database is built into the binary, so any IANA name works without extra packages. An unknown name stops rdb at startup instead of silently falling back to UTC. `TZ` also applies to `rdb health`'s overdue check, the times shown by `rdb snapshots` and log timestamps, and is passed through to restic.
+
+To run a single job in a different zone, prefix its schedule with `CRON_TZ=`, e.g. `RDB_MAINTENANCE_CRON="CRON_TZ=America/New_York 0 4 * * 0"`.
+
+Avoid scheduling jobs inside the daylight-saving transition window (typically 01:00–03:00 local): a time skipped when clocks go forward does not run that day, and a time repeated when clocks go back runs twice.
 
 ## Scheduler lifecycle
 

@@ -10,6 +10,7 @@ services:
       - RESTIC_REPOSITORY=/backups
       - RESTIC_PASSWORD=changeme
       - RDB_CRON_SCHEDULE=0 2 * * *
+      - TZ=UTC
       - RDB_LOG_LEVEL=info
 
   postgres:
