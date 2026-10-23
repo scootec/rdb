@@ -119,30 +119,41 @@ func (o *Orchestrator) backupContainer(ctx context.Context, ctr docker.Container
 	log.Info().Str("container", ctr.Name).Msg("backing up container")
 
 	return runWithHooks(ctx, o.dc, ctr, func(ctx context.Context) error {
-		if ctr.VolumesEnabled {
-			if err := backupVolumes(ctx, o.dc, o.rc, ctr, o.cfg.ExcludeBindMounts); err != nil {
-				return err
-			}
-		}
-
-		if ctr.PostgresEnabled {
-			if err := dumpDatabase(ctx, o.dc, o.rc, ctr, "postgres"); err != nil {
-				return err
-			}
-		}
-
-		if ctr.MySQLEnabled {
-			if err := dumpDatabase(ctx, o.dc, o.rc, ctr, "mysql"); err != nil {
-				return err
-			}
-		}
-
-		if ctr.MariaDBEnabled {
-			if err := dumpDatabase(ctx, o.dc, o.rc, ctr, "mariadb"); err != nil {
-				return err
-			}
-		}
-
-		return nil
+		return runBackupSteps(ctx, ctr,
+			func(ctx context.Context, dbType string) error {
+				return dumpDatabase(ctx, o.dc, o.rc, ctr, dbType)
+			},
+			func(ctx context.Context) error {
+				return backupVolumes(ctx, o.dc, o.rc, ctr, o.cfg.ExcludeBindMounts)
+			})
 	})
+}
+
+// runBackupSteps runs a container's enabled database dumps, then its volume
+// backup, stopping at the first failure. Dumps go first because they need
+// the database up and accepting connections, while the volume backup may
+// stop and restart the container (rdb.volumes.stop-during-backup) — a dump
+// started right after that restart would race the database's startup.
+func runBackupSteps(ctx context.Context, ctr docker.ContainerInfo, dump func(context.Context, string) error, volumes func(context.Context) error) error {
+	dbs := []struct {
+		enabled bool
+		dbType  string
+	}{
+		{ctr.PostgresEnabled, "postgres"},
+		{ctr.MySQLEnabled, "mysql"},
+		{ctr.MariaDBEnabled, "mariadb"},
+	}
+	for _, db := range dbs {
+		if !db.enabled {
+			continue
+		}
+		if err := dump(ctx, db.dbType); err != nil {
+			return err
+		}
+	}
+
+	if ctr.VolumesEnabled {
+		return volumes(ctx)
+	}
+	return nil
 }

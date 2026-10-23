@@ -229,9 +229,10 @@ How the scripts behave:
   container's default user (the image must have `sh`). To run as another user, wrap the
   command yourself, e.g. `su -s /bin/sh www-data -c '...'`.
 - **Ordering.** The pre-backup script runs before everything else for that container —
-  before `rdb.volumes.stop-during-backup` stops it, and before volume backups and database
-  dumps. The post-backup script runs after all of the container's backups (and after a
-  stopped container has been restarted).
+  before database dumps and volume backups, and before `rdb.volumes.stop-during-backup`
+  stops it. Database dumps run before the volume backup, so a container that is stopped
+  for its volume backup is dumped while it is still up. The post-backup script runs after
+  all of the container's backups (and after a stopped container has been restarted).
 - **Failure.** A pre-backup script that exits non-zero **fails the container's backup and
   skips it** — backing up a stale export would silently masquerade as a good backup. A
   failing post-backup script also marks the run failed. Failures are reported through the

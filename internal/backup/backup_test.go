@@ -1,6 +1,9 @@
 package backup
 
 import (
+	"context"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -36,5 +39,69 @@ func TestDiscoveryErrors(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// recordSteps returns fake dump/volume steps that record their order and
+// fail on the named step.
+func recordSteps(order *[]string, failOn string) (func(context.Context, string) error, func(context.Context) error) {
+	dump := func(_ context.Context, dbType string) error {
+		*order = append(*order, dbType)
+		if dbType == failOn {
+			return errors.New(dbType + " failed")
+		}
+		return nil
+	}
+	volumes := func(context.Context) error {
+		*order = append(*order, "volumes")
+		if failOn == "volumes" {
+			return errors.New("volumes failed")
+		}
+		return nil
+	}
+	return dump, volumes
+}
+
+func TestRunBackupStepsDumpsBeforeVolumes(t *testing.T) {
+	// A container may be stopped for its volume backup; its databases must
+	// be dumped while it is still up, not right after it restarts.
+	ctr := docker.ContainerInfo{
+		VolumesEnabled: true, VolumeStopDuringBackup: true,
+		PostgresEnabled: true, MySQLEnabled: true, MariaDBEnabled: true,
+	}
+	var order []string
+	dump, volumes := recordSteps(&order, "")
+
+	if err := runBackupSteps(context.Background(), ctr, dump, volumes); err != nil {
+		t.Fatalf("runBackupSteps() error = %v", err)
+	}
+	want := []string{"postgres", "mysql", "mariadb", "volumes"}
+	if !reflect.DeepEqual(order, want) {
+		t.Errorf("step order = %v, want %v", order, want)
+	}
+}
+
+func TestRunBackupStepsSkipsDisabledSteps(t *testing.T) {
+	var order []string
+	dump, volumes := recordSteps(&order, "")
+
+	if err := runBackupSteps(context.Background(), docker.ContainerInfo{MySQLEnabled: true}, dump, volumes); err != nil {
+		t.Fatalf("runBackupSteps() error = %v", err)
+	}
+	if !reflect.DeepEqual(order, []string{"mysql"}) {
+		t.Errorf("step order = %v, want only mysql", order)
+	}
+}
+
+func TestRunBackupStepsStopsAtFirstFailure(t *testing.T) {
+	ctr := docker.ContainerInfo{VolumesEnabled: true, PostgresEnabled: true}
+	var order []string
+	dump, volumes := recordSteps(&order, "postgres")
+
+	if err := runBackupSteps(context.Background(), ctr, dump, volumes); err == nil {
+		t.Fatal("runBackupSteps() error = nil, want the dump failure")
+	}
+	if !reflect.DeepEqual(order, []string{"postgres"}) {
+		t.Errorf("step order = %v, want volumes skipped after the failed dump", order)
 	}
 }
