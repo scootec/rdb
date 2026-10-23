@@ -305,7 +305,11 @@ func runRestore(cfg *config.Config) {
 	rc := restic.New(cfg.ResticHostname)
 	restorer := restore.New(dc, rc)
 
-	ctx := context.Background()
+	// Ctrl-C / SIGTERM cancels the restore instead of killing the process
+	// outright, so restic releases its locks and a container stopped via
+	// --stop is still restarted.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
 	if err := restorer.Restore(ctx, opts); err != nil {
 		log.Fatal().Err(err).Msg("restore failed")
 	}
