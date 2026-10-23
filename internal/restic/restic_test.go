@@ -3,6 +3,7 @@ package restic
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -427,5 +428,57 @@ func TestRunCapturePreexpiredContextFails(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("runCapture() took %v with a cancelled context, want fast failure", elapsed)
+	}
+}
+
+// fakeDumpBinary installs a shell script as the restic binary that prints
+// output to stdout and exits with the given code.
+func fakeDumpBinary(t *testing.T, output string, exitCode int) {
+	t.Helper()
+	script := filepath.Join(t.TempDir(), "restic")
+	body := fmt.Sprintf("#!/bin/sh\nprintf %%s %q\nexit %d\n", output, exitCode)
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	orig := resticBinary
+	resticBinary = script
+	t.Cleanup(func() { resticBinary = orig })
+}
+
+func TestDumpSuccessReadsToEOF(t *testing.T) {
+	fakeDumpBinary(t, "SELECT 1;", 0)
+
+	reader, err := New("").Dump(context.Background(), "abc123", "/databases/db.sql")
+	if err != nil {
+		t.Fatalf("Dump() error = %v", err)
+	}
+	got, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v, want nil", err)
+	}
+	if string(got) != "SELECT 1;" {
+		t.Errorf("ReadAll() = %q, want %q", got, "SELECT 1;")
+	}
+	if err := reader.Close(); err != nil {
+		t.Errorf("Close() error = %v, want nil", err)
+	}
+}
+
+func TestDumpFailureSurfacesAsReadError(t *testing.T) {
+	fakeDumpBinary(t, "SELECT 1; -- truncated", 1)
+
+	reader, err := New("").Dump(context.Background(), "abc123", "/databases/db.sql")
+	if err != nil {
+		t.Fatalf("Dump() error = %v", err)
+	}
+	got, err := io.ReadAll(reader)
+	if err == nil {
+		t.Fatal("ReadAll() error = nil, want restic's non-zero exit reported instead of EOF")
+	}
+	if string(got) != "SELECT 1; -- truncated" {
+		t.Errorf("ReadAll() = %q, want the partial output still delivered", got)
+	}
+	if err := reader.Close(); err == nil {
+		t.Error("Close() error = nil, want the same exit failure")
 	}
 }

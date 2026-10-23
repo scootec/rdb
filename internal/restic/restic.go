@@ -383,6 +383,7 @@ func restoreArgs(snapshotID, target string, includes []string) []string {
 }
 
 // Dump runs "restic dump <snapshotID> <path>" and returns stdout as a reader.
+// If restic exits non-zero, the reader returns an error in place of io.EOF.
 // The caller must close the returned reader.
 func (r *Runner) Dump(ctx context.Context, snapshotID, path string) (io.ReadCloser, error) {
 	args := []string{"dump", snapshotID, path}
@@ -403,15 +404,39 @@ func (r *Runner) Dump(ctx context.Context, snapshotID, path string) (io.ReadClos
 	return &cmdReader{cmd: cmd, ReadCloser: stdout}, nil
 }
 
-// cmdReader wraps a command's stdout pipe and waits for the command on Close.
+// cmdReader wraps a command's stdout pipe. At EOF it waits for the command
+// and reports a failed exit as a read error instead of io.EOF, so a dump that
+// dies partway through can never pass for a complete stream.
 type cmdReader struct {
 	cmd *exec.Cmd
 	io.ReadCloser
+
+	waited  bool
+	waitErr error
+}
+
+func (r *cmdReader) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	if err == io.EOF {
+		if waitErr := r.wait(); waitErr != nil {
+			return n, fmt.Errorf("restic dump: %w", waitErr)
+		}
+	}
+	return n, err
+}
+
+// wait waits for the command once and remembers its result.
+func (r *cmdReader) wait() error {
+	if !r.waited {
+		r.waited = true
+		r.waitErr = r.cmd.Wait()
+	}
+	return r.waitErr
 }
 
 func (r *cmdReader) Close() error {
 	r.ReadCloser.Close()
-	return r.cmd.Wait()
+	return r.wait()
 }
 
 // run executes the restic binary with the given arguments.
