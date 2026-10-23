@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/moby/moby/api/types/container"
 )
 
 func TestLabelBool(t *testing.T) {
@@ -156,5 +158,22 @@ func TestHasRDBLabel(t *testing.T) {
 				t.Errorf("hasRDBLabel(%v) = %v, want %v", tt.labels, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIdleContainers(t *testing.T) {
+	items := []container.Summary{
+		{ID: "r1", Names: []string{"/running"}, State: container.StateRunning, Labels: map[string]string{"rdb.volumes": "true"}},
+		{ID: "e1", Names: []string{"/stopped-db"}, State: container.StateExited, Labels: map[string]string{"rdb.postgres": "true"}},
+		{ID: "x1", Names: []string{"/restarting"}, State: container.StateRestarting, Labels: map[string]string{"rdb.mysql": "true"}},
+		{ID: "u1", Names: []string{"/unlabelled"}, State: container.StateExited, Labels: map[string]string{"foo": "bar"}},
+		{ID: "o1", Names: []string{"/myapp-db-run-1"}, State: container.StateExited,
+			Labels: map[string]string{"rdb.postgres": "true", "com.docker.compose.oneoff": "True"}},
+	}
+
+	got := idleContainers(items)
+	want := []IdleContainer{{Name: "stopped-db", State: "exited"}, {Name: "restarting", State: "restarting"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("idleContainers() = %v, want %v", got, want)
 	}
 }

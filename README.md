@@ -141,6 +141,8 @@ services:
 
 Backup systems fail silently: a crashed scheduler or a misconfigured credential produces no output at all. rdb offers two independent signals, and success is reported as explicitly as failure — "no news" is distinguishable from "notifier is broken".
 
+A backup run also counts as failed when it would otherwise back up less than you expect: when no containers with rdb labels are found at all (wrong Docker socket, labels lost when a stack was recreated), or when a labelled container is not running (exited, restarting, paused) and so could not be backed up. Remove a retired container (`docker rm`) rather than leaving it stopped, or its labels keep failing the run. Containers created by `docker compose run` are ignored.
+
 ### Webhook pings (healthchecks.io compatible)
 
 Set `RDB_HEALTHCHECK_URL` to a check's ping URL and rdb notifies it after every backup run — scheduled or manual:

@@ -93,6 +93,43 @@ func (c *Client) DiscoverContainers(ctx context.Context) ([]ContainerInfo, error
 	return result, nil
 }
 
+// IdleContainer is a container with rdb labels that is not running, and so
+// cannot be backed up.
+type IdleContainer struct {
+	Name  string
+	State string
+}
+
+// DiscoverIdleContainers lists containers that have rdb labels but are not
+// running (exited, restarting, paused, ...). Compose one-off containers
+// (`docker compose run`) are ignored: they copy their service's labels but
+// are never the service's backup target.
+func (c *Client) DiscoverIdleContainers(ctx context.Context) ([]IdleContainer, error) {
+	containers, err := c.cli.ContainerList(ctx, client.ContainerListOptions{All: true})
+	if err != nil {
+		return nil, fmt.Errorf("listing containers: %w", err)
+	}
+	return idleContainers(containers.Items), nil
+}
+
+func idleContainers(items []container.Summary) []IdleContainer {
+	var result []IdleContainer
+	for _, ctr := range items {
+		if ctr.State == container.StateRunning || !hasRDBLabel(ctr.Labels) {
+			continue
+		}
+		if strings.EqualFold(ctr.Labels["com.docker.compose.oneoff"], "true") {
+			continue
+		}
+		name := ctr.ID
+		if len(ctr.Names) > 0 {
+			name = strings.TrimPrefix(ctr.Names[0], "/")
+		}
+		result = append(result, IdleContainer{Name: name, State: string(ctr.State)})
+	}
+	return result
+}
+
 func hasRDBLabel(labels map[string]string) bool {
 	for k := range labels {
 		if strings.HasPrefix(k, labelPrefix) {
